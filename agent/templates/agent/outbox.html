@@ -1,0 +1,49 @@
+{% extends "agent/base.html" %}
+{% block title %}Approve emails{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Approve emails</h1><div class="sub">Nothing is sent until you approve it. Edit anything you like first.<br>Cold emails go out {{ config.send_window_label }}; approved emails wait until it's working hours where the business is.</div></div>
+  {% if drafts %}
+  <form method="post" action="{% url 'approve_all' %}" onsubmit="return confirm('Approve all {{ drafts|length }} drafts without reading them?')">{% csrf_token %}
+    <button class="btn">Approve all {{ drafts|length }}</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if address_missing %}<div class="flash error">Cold emails are on hold until you add your postal address in <a href="{% url 'settings' %}">Settings</a>. US and UK rules require a real address in every cold email.</div>{% endif %}
+
+{% for m in drafts %}
+<form class="card" method="post" action="{% url 'message_action' m.pk %}" style="margin-bottom:16px">{% csrf_token %}
+  <div class="spread" style="margin-bottom:6px">
+    <div>
+      <h3><a href="{% url 'lead_detail' m.lead.pk %}">{{ m.lead.name }}</a></h3>
+      <div class="muted small">To {{ m.lead.email|default:"(no email)" }} · {{ m.lead.category }}{% if m.lead.city %} in {{ m.lead.city }}{% endif %}{% if m.lead.market %} · {{ m.lead.market.name }}{% endif %}{% if m.lead.fit_score is not None %} · fit {{ m.lead.fit_score }}/100{% endif %}</div>
+    </div>
+    <span class="pill">{{ m.get_kind_display }}</span>
+  </div>
+  {% if m.lead.hook and m.kind == 'initial' %}<div class="small muted" style="margin:6px 0">Why them: {{ m.lead.fit_reason }}</div>{% endif %}
+  <label>Subject</label><input name="subject" value="{{ m.subject }}">
+  <label>Email</label><textarea name="body" rows="11">{{ m.body }}</textarea>
+  <div class="row" style="margin-top:12px">
+    <button class="btn primary" name="action" value="approve">Approve & queue</button>
+    <button class="btn" name="action" value="save">Save edits</button>
+    <button class="btn" name="action" value="redraft">Rewrite with Claude</button>
+    <button class="btn ghost danger" name="action" value="reject">Reject</button>
+  </div>
+</form>
+{% empty %}
+<div class="card empty">No drafts waiting. The agent writes new ones on each check-in.</div>
+{% endfor %}
+
+{% if approved %}
+<h2 style="margin:28px 0 12px">Approved — sending on the next check-in</h2>
+<div class="card" style="padding:0">
+<table><tbody>
+{% for m in approved %}
+<tr><td><a href="{% url 'lead_detail' m.lead.pk %}">{{ m.lead.name }}</a><div class="muted small">{{ m.subject }}</div></td>
+<td style="text-align:right"><form method="post" action="{% url 'message_action' m.pk %}">{% csrf_token %}<button class="btn sm" name="action" value="unapprove">Undo</button></form></td></tr>
+{% endfor %}
+</tbody></table>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "agent/base.html" %}
+{% block title %}Leads{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Leads</h1><div class="sub">{{ total }} businesses found so far</div></div>
+  <div class="row">
+    <form method="get" class="row"><input type="hidden" name="status" value="{{ status }}"><input name="q" value="{{ q }}" placeholder="Search name, email, city…" style="width:240px"></form>
+    <a class="btn primary" href="{% url 'lead_add' %}">+ Add lead</a>
+  </div>
+</div>
+<div class="tabs">
+  <a href="?q={{ q|urlencode }}" class="{% if not status %}on{% endif %}">All</a>
+  {% for value, label, n in statuses %}{% if n %}<a href="?status={{ value }}&q={{ q|urlencode }}" class="{% if status == value %}on{% endif %}">{{ label }} · {{ n }}</a>{% endif %}{% endfor %}
+</div>
+<div class="card" style="padding:0;overflow-x:auto">
+<table>
+  <thead><tr><th>Business</th><th class="hide-sm">Contact</th><th>Fit</th><th>Status</th><th class="hide-sm">Updated</th></tr></thead>
+  <tbody>
+  {% for l in page %}
+  <tr>
+    <td><a href="{% url 'lead_detail' l.pk %}"><b>{{ l.name }}</b></a><div class="muted small">{{ l.category }}{% if l.city %} · {{ l.city }}{% endif %}{% if l.market %} · {{ l.market.name }}{% endif %}</div></td>
+    <td class="hide-sm small">{{ l.email|default:"—" }}{% if l.phone %}<div>{{ l.phone }}</div>{% endif %}{% if l.website %}<div class="muted">{{ l.website|truncatechars:38 }}</div>{% endif %}</td>
+    <td>{% if l.fit_score is not None %}{{ l.fit_score }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td><span class="pill {{ l.status }}">{{ l.get_status_display }}</span></td>
+    <td class="hide-sm muted small">{{ l.updated_at|timesince }} ago</td>
+  </tr>
+  {% empty %}
+  <tr><td colspan="5" class="empty">No leads yet. Start the agent, or add one by hand.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if page.has_other_pages %}
+<div class="row" style="margin-top:14px">
+  {% if page.has_previous %}<a class="btn sm" href="?page={{ page.previous_page_number }}&status={{ status }}&q={{ q|urlencode }}">← Prev</a>{% endif %}
+  <span class="muted small">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}<a class="btn sm" href="?page={{ page.next_page_number }}&status={{ status }}&q={{ q|urlencode }}">Next →</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

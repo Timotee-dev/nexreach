@@ -1,0 +1,70 @@
+{% extends "agent/base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="head">
+  <div>
+    <h1>Overview</h1>
+    <div class="sub">Agent is {% if config.agent_enabled %}<b style="color:var(--good)">on</b>{% else %}<b style="color:var(--warn)">paused</b>{% endif %} · checks in every 15 minutes while <code>run_agent</code> is running</div>
+  </div>
+  <div class="row">
+    <a class="btn" href="{% url 'lead_add' %}">+ Add a lead</a>
+    <a class="btn primary" href="{% url 'outbox' %}">Review {{ pending_count }} draft{{ pending_count|pluralize }}</a>
+  </div>
+</div>
+
+<div class="grid g4" style="margin-bottom:16px">
+  <div class="card stat"><div class="n">{{ pending_count }}</div><div class="l">Waiting for your approval</div></div>
+  <div class="card stat"><div class="n">{{ approved_count }}</div><div class="l">Approved, sending next check-in</div></div>
+  <div class="card stat"><div class="n">{{ sent_today }}<span class="muted" style="font-size:16px"> / {{ config.daily_send_limit }}</span></div><div class="l">Cold emails sent today</div></div>
+  <div class="card stat"><div class="n">{{ call_list_count }}</div><div class="l"><a href="{% url 'call_list' %}">To message directly</a></div></div>
+</div>
+
+<div class="grid g2">
+  <div class="grid">
+    <div class="card">
+      <h2 style="margin-bottom:14px">Pipeline</h2>
+      {% for label, n, pct in funnel %}
+      <div style="margin-bottom:11px">
+        <div class="spread small"><span>{{ label }}</span><b>{{ n }}</b></div>
+        <div class="bar"><span style="width:{{ pct }}%"></span></div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="card">
+      <div class="spread" style="margin-bottom:8px"><h2>Waiting for approval</h2><a class="small muted" href="{% url 'outbox' %}">See all →</a></div>
+      {% for m in pending %}
+        <div style="padding:10px 0;border-bottom:1px solid var(--line)">
+          <div class="spread"><b>{{ m.lead.name }}</b><span class="pill">{{ m.get_kind_display }}</span></div>
+          <div class="muted small">{{ m.subject }}</div>
+        </div>
+      {% empty %}
+        <div class="empty">Nothing to approve right now.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="grid" style="align-content:start">
+    <div class="card">
+      <h2 style="margin-bottom:8px">Hot leads</h2>
+      {% for l in hot_leads %}
+        <div class="spread" style="padding:8px 0;border-bottom:1px solid var(--line)">
+          <a href="{% url 'lead_detail' l.pk %}">{{ l.name }}</a><span class="pill {{ l.status }}">{{ l.get_status_display }}</span>
+        </div>
+      {% empty %}
+        <div class="muted small">Replies show up here.</div>
+      {% endfor %}
+    </div>
+    <div class="card">
+      <div class="spread"><h2>Activity</h2><a class="small muted" href="{% url 'activity' %}">All →</a></div>
+      <ul class="feed">
+        {% for a in activity %}
+        <li><span class="dot {{ a.level }}"></span><div><div class="small">{% if a.lead %}<a href="{% url 'lead_detail' a.lead.pk %}">{{ a.text }}</a>{% else %}{{ a.text }}{% endif %}</div><div class="muted small">{{ a.created_at|timesince }} ago</div></div></li>
+        {% empty %}
+        <li class="muted small">Start the agent with <code>python manage.py run_agent</code>.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "agent/base.html" %}
+{% block title %}Activity{% endblock %}
+{% block content %}
+<div class="head"><div><h1>Activity</h1><div class="sub">Everything the agent has done.</div></div></div>
+<div class="card">
+  <ul class="feed">
+  {% for a in page %}
+    <li><span class="dot {{ a.level }}"></span><div><div>{% if a.lead %}<a href="{% url 'lead_detail' a.lead.pk %}">{{ a.text }}</a>{% else %}{{ a.text }}{% endif %}</div><div class="muted small">{{ a.created_at|date:"D j M, H:i" }}</div></div></li>
+  {% empty %}
+    <li class="muted">Nothing yet.</li>
+  {% endfor %}
+  </ul>
+</div>
+{% if page.has_other_pages %}
+<div class="row" style="margin-top:14px">
+  {% if page.has_previous %}<a class="btn sm" href="?page={{ page.previous_page_number }}">← Newer</a>{% endif %}
+  {% if page.has_next %}<a class="btn sm" href="?page={{ page.next_page_number }}">Older →</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

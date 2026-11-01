@@ -1,0 +1,7 @@
+Django>=5.2
+requests>=2.31
+beautifulsoup4>=4.12
+python-dotenv>=1.0
+tzdata  # time zones on Windows
+# Only if you set LLM_BACKEND=api:
+# anthropic>=0.40

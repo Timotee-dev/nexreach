@@ -1,0 +1,112 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}NexReach{% endblock %} · NexReach</title>
+<link rel="icon" href="{% static logo_file %}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0d10; --panel:#12151a; --panel-2:#171b21; --line:#232832; --text:#e8eaee; --muted:#8b93a1;
+  --accent:#c6f432; --accent-ink:#0b0d10; --good:#4ade80; --warn:#fbbf24; --bad:#f87171; --info:#60a5fa;
+  --radius:14px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 Inter,system-ui,sans-serif}
+a{color:inherit}
+h1,h2,h3{font-family:"Space Grotesk",Inter,sans-serif;letter-spacing:-.01em;margin:0}
+h1{font-size:26px} h2{font-size:17px} h3{font-size:15px}
+.shell{display:grid;grid-template-columns:230px minmax(0,1fr);min-height:100vh}
+aside,main{min-width:0}
+code{word-break:break-all}
+aside{border-right:1px solid var(--line);padding:22px 16px;position:sticky;top:0;height:100vh;background:linear-gradient(180deg,#0e1115,#0b0d10)}
+.brand{display:flex;align-items:center;gap:10px;font-family:"Space Grotesk";font-weight:700;font-size:18px;margin:0 8px 28px}
+.brand i{width:28px;height:28px;border-radius:8px;background:var(--accent);box-shadow:0 0 24px rgba(198,244,50,.35);display:grid;place-items:center;color:var(--accent-ink);font-style:normal;font-size:14px}
+nav a{display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-radius:10px;text-decoration:none;color:var(--muted);font-weight:500;margin-bottom:2px}
+nav a:hover{background:var(--panel-2);color:var(--text)}
+nav a.on{background:var(--panel-2);color:var(--text);box-shadow:inset 2px 0 0 var(--accent)}
+.badge{background:var(--accent);color:var(--accent-ink);border-radius:99px;padding:0 8px;font-size:12px;font-weight:600}
+main{padding:28px 32px 60px;max-width:1180px;width:100%}
+.head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:22px;flex-wrap:wrap}
+.sub{color:var(--muted);margin-top:4px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:1.4fr 1fr} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+.stat .n{font-family:"Space Grotesk";font-size:28px;font-weight:600}
+.stat .l{color:var(--muted);font-size:13px}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);padding:8px 14px;border-radius:10px;font:inherit;font-weight:500;cursor:pointer;text-decoration:none}
+.btn:hover{border-color:#3a4150}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.btn.primary:hover{filter:brightness(1.05)}
+.btn.ghost{background:transparent}
+.btn.danger{color:var(--bad)}
+.btn.sm{padding:5px 10px;font-size:13px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.spread{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.muted{color:var(--muted)} .small{font-size:12.5px}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;color:var(--muted);font-weight:500;font-size:12.5px;padding:10px 12px;border-bottom:1px solid var(--line)}
+td{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--panel-2)}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500;background:#1f242c;color:var(--muted);white-space:nowrap}
+.pill.qualified,.pill.drafted{background:rgba(96,165,250,.12);color:var(--info)}
+.pill.contacted{background:rgba(198,244,50,.1);color:var(--accent)}
+.pill.replied,.pill.interested,.pill.closed{background:rgba(74,222,128,.12);color:var(--good)}
+.pill.no_email{background:rgba(251,191,36,.12);color:var(--warn)}
+.pill.unsubscribed,.pill.bounced,.pill.not_interested,.pill.disqualified{background:rgba(248,113,113,.1);color:var(--bad)}
+input,textarea,select{width:100%;background:#0d1014;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 11px;font:inherit}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
+textarea{resize:vertical;line-height:1.55}
+input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
+label{display:block;font-weight:500;margin:12px 0 6px}
+.help{color:var(--muted);font-size:12.5px;margin-top:4px}
+.flash{padding:11px 14px;border-radius:10px;margin-bottom:16px;border:1px solid var(--line);background:var(--panel)}
+.flash.success{border-color:rgba(74,222,128,.35)} .flash.error{border-color:rgba(248,113,113,.4)} .flash.info{border-color:rgba(96,165,250,.35)}
+.bar{height:8px;border-radius:99px;background:#1c2128;overflow:hidden}
+.bar span{display:block;height:100%;background:var(--accent);border-radius:99px}
+.feed li{list-style:none;padding:9px 0;border-bottom:1px solid var(--line);display:flex;gap:10px}
+.feed{padding:0;margin:0} .feed li:last-child{border:0}
+.dot{width:8px;height:8px;border-radius:50%;margin-top:7px;flex:none;background:var(--muted)}
+.dot.success{background:var(--good)} .dot.warning{background:var(--warn)} .dot.error{background:var(--bad)}
+.email{white-space:pre-wrap;background:#0d1014;border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:8px}
+.bubble{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.bubble.in{border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.04)}
+.empty{text-align:center;padding:40px 20px;color:var(--muted)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.tabs a{padding:6px 12px;border-radius:99px;border:1px solid var(--line);text-decoration:none;color:var(--muted);font-size:13px}
+.tabs a.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:6px 12px} .kv div:nth-child(odd){color:var(--muted)}
+@media (max-width:900px){
+  .shell{grid-template-columns:minmax(0,1fr)} aside{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);padding:14px 16px}
+  nav{display:flex;gap:4px;overflow-x:auto} nav a{white-space:nowrap} .brand{margin-bottom:10px}
+  main{padding:20px 16px} .g2,.g3,.g4{grid-template-columns:1fr 1fr}
+}
+@media (max-width:560px){ .g2,.g3{grid-template-columns:1fr} .g4{grid-template-columns:1fr 1fr} .stat .n{font-size:22px} .hide-sm{display:none} }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="brand"><img src="{% static logo_file %}" alt="" width="30" height="30" style="border-radius:8px;box-shadow:0 0 22px rgba(198,244,50,.3)">NexReach</div>
+    {% with u=request.resolver_match.url_name %}
+    <nav>
+      <a href="{% url 'dashboard' %}" class="{% if u == 'dashboard' %}on{% endif %}">Overview</a>
+      <a href="{% url 'outbox' %}" class="{% if u == 'outbox' %}on{% endif %}">Approve emails {% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</a>
+      <a href="{% url 'leads' %}" class="{% if u == 'leads' or u == 'lead_detail' or u == 'lead_add' %}on{% endif %}">Leads</a>
+      <a href="{% url 'call_list' %}" class="{% if u == 'call_list' %}on{% endif %}">Direct messages</a>
+      <a href="{% url 'markets' %}" class="{% if u == 'markets' %}on{% endif %}">Markets</a>
+      <a href="{% url 'activity' %}" class="{% if u == 'activity' %}on{% endif %}">Activity</a>
+      <a href="{% url 'settings' %}" class="{% if u == 'settings' %}on{% endif %}">Settings</a>
+    </nav>
+    {% endwith %}
+  </aside>
+  <main>
+    {% for m in messages %}<div class="flash {{ m.tags }}">{{ m }}</div>{% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

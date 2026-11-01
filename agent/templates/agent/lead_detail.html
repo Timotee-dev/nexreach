@@ -1,0 +1,110 @@
+{% extends "agent/base.html" %}
+{% block title %}{{ lead.name }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div>
+    <div class="small muted"><a href="{% url 'leads' %}">← Leads</a></div>
+    <h1>{{ lead.name }}</h1>
+    <div class="sub">{{ lead.category }}{% if lead.city %} · {{ lead.city }}{% endif %} · <span class="pill {{ lead.status }}">{{ lead.get_status_display }}</span>{% if suppressed %} <span class="pill unsubscribed">Do not contact</span>{% endif %}</div>
+  </div>
+  <form method="post" action="{% url 'lead_action' lead.pk %}" class="row">{% csrf_token %}
+    <button class="btn" name="action" value="research">Research again</button>
+    {% if lead.email and not suppressed %}<button class="btn primary" name="action" value="draft">Draft an email</button>{% endif %}
+  </form>
+</div>
+
+<div class="grid g2">
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <h2 style="margin-bottom:10px">Research</h2>
+      {% if lead.researched_at %}
+        <div class="spread" style="margin-bottom:8px"><span class="muted small">Fit score</span><b>{{ lead.fit_score }}/100</b></div>
+        <div class="bar" style="margin-bottom:12px"><span style="width:{{ lead.fit_score }}%"></span></div>
+        <p style="margin:0 0 10px">{{ lead.research_summary }}</p>
+        <p class="small" style="margin:0 0 10px"><span class="muted">Why:</span> {{ lead.fit_reason }}</p>
+        {% if lead.hook %}<p class="small" style="margin:0 0 10px"><span class="muted">Opening angle:</span> {{ lead.hook }}</p>{% endif %}
+        {% if lead.site_signals %}<div class="muted small" style="margin-top:12px">Problems spotted</div><ul style="margin:6px 0 0;padding-left:18px">{% for s in lead.site_signals %}<li class="small">{{ s }}</li>{% endfor %}</ul>{% endif %}
+      {% else %}
+        <div class="muted">Not researched yet — the agent will do it on the next check-in, or click “Research again”.</div>
+      {% endif %}
+    </div>
+
+    <h2 style="margin:4px 0 12px">Conversation</h2>
+    {% for m in thread %}
+      <div class="bubble {% if m.direction == 'in' %}in{% endif %}">
+        <div class="spread small">
+          <b>{% if m.direction == 'in' %}{{ lead.name }}{% else %}You{% endif %} · {{ m.get_kind_display }}</b>
+          <span class="muted">{{ m.get_status_display }} · {% firstof m.sent_at m.received_at m.created_at as when %}{{ when|date:"j M, H:i" }}</span>
+        </div>
+        <div class="small" style="margin-top:4px"><b>{{ m.subject }}</b></div>
+        {% if m.classification %}<div class="small" style="margin-top:4px"><span class="pill interested">{{ m.classification|cut:"_" }}</span> <span class="muted">{{ m.summary }}</span></div>{% endif %}
+        <div class="email">{{ m.body }}</div>
+        {% if m.error %}<div class="small" style="color:var(--bad);margin-top:6px">{{ m.error }}</div>{% endif %}
+        {% if m.status == 'draft' %}<div style="margin-top:8px"><a class="btn sm primary" href="{% url 'outbox' %}">Review in approval queue</a></div>{% endif %}
+      </div>
+    {% empty %}
+      <div class="card empty">No emails yet.</div>
+    {% endfor %}
+  </div>
+
+  <div class="grid" style="align-content:start">
+    <div class="card">
+      <h2 style="margin-bottom:12px">Details</h2>
+      <div class="kv small">
+        <div>Website</div><div>{% if lead.website %}<a href="{{ lead.website }}" target="_blank" rel="noopener">{{ lead.website|truncatechars:40 }}</a>{% else %}—{% endif %}</div>
+        <div>Phone</div><div>{{ lead.phone|default:"—" }}{% if lead.whatsapp_link %} · <a href="{{ lead.whatsapp_link }}" target="_blank" rel="noopener">WhatsApp</a>{% endif %}</div>
+        <div>Address</div><div>{{ lead.address|default:"—" }}</div>
+        <div>Source</div><div>{{ lead.source }}</div>
+        <div>Follow-ups</div><div>{{ lead.followups_sent }}</div>
+      </div>
+      <form method="post" style="margin-top:8px">{% csrf_token %}
+        <label for="id_email">Email</label>{{ form.email }}
+        <label for="id_phone">Phone</label>{{ form.phone }}
+        <label for="id_notes">Notes</label>{{ form.notes }}
+        <button class="btn" style="margin-top:12px">Save</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2 style="margin-bottom:8px">Direct message</h2>
+      {% if lead.whatsapp_sent_at %}<div class="small" style="margin-bottom:8px"><span class="pill interested">Messaged{% if lead.dm_channel %} on {{ lead.dm_channel|title }}{% endif %} · {{ lead.whatsapp_sent_at|date:"j M, H:i" }}</span></div>{% endif %}
+      <form method="post" action="{% url 'lead_action' lead.pk %}">{% csrf_token %}
+        <textarea name="whatsapp_message" rows="6" placeholder="Click “Write with Claude” to draft one.">{{ lead.whatsapp_message }}</textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="btn" name="action" value="whatsapp_save">Save</button>
+          <button class="btn ghost" name="action" value="whatsapp_write">{% if lead.whatsapp_message %}Rewrite{% else %}Write{% endif %} with Claude</button>
+          {% if not lead.whatsapp_sent_at %}<button class="btn" name="action" value="whatsapp_sent">Mark as sent</button>{% endif %}
+        </div>
+      </form>
+      <div class="row" style="margin-top:10px">
+        {% if lead.whatsapp_message and lead.whatsapp_link %}<a class="btn primary" href="{{ lead.whatsapp_send_link }}" target="_blank" rel="noopener">WhatsApp</a>{% endif %}
+        {% for net, label, profile, dm in lead.dm_channels %}<a class="btn" href="{{ dm }}" target="_blank" rel="noopener">{{ label }}</a>{% endfor %}
+      </div>
+      <div class="help">Save first if you edited the message. For Instagram, Facebook and LinkedIn, copy the message and paste it in the chat — or use the Direct messages page, which copies it for you.</div>
+    </div>
+    <div class="card" id="socials">
+      <h2 style="margin-bottom:4px">Social accounts</h2>
+      <div class="help" style="margin-bottom:6px">Paste a profile link or @handle. Phone: {% if lead.phone %}{{ lead.phone }} ({{ lead.phone_kind|default:"—" }}){% else %}none{% endif %}</div>
+      <form method="post" action="{% url 'lead_action' lead.pk %}">{% csrf_token %}
+        {% for net, label in social_fields %}
+          <label for="s-{{ net }}">{{ label }}</label>
+          <input id="s-{{ net }}" name="social_{{ net }}" value="{% for k, v in lead.socials.items %}{% if k == net %}{{ v }}{% endif %}{% endfor %}" placeholder="https://… or @handle">
+        {% endfor %}
+        <button class="btn" name="action" value="socials_save" style="margin-top:12px">Save accounts</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2 style="margin-bottom:8px">Change status</h2>
+      <form method="post" action="{% url 'lead_action' lead.pk %}" class="row">{% csrf_token %}
+        <input type="hidden" name="action" value="status">
+        <select name="status" style="flex:1">{% for v, l in statuses %}<option value="{{ v }}" {% if v == lead.status %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+        <button class="btn">Set</button>
+      </form>
+      {% if not suppressed %}
+      <form method="post" action="{% url 'lead_action' lead.pk %}" style="margin-top:12px" onsubmit="return confirm('Never email this business again?')">{% csrf_token %}
+        <button class="btn ghost danger sm" name="action" value="suppress">Never contact again</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

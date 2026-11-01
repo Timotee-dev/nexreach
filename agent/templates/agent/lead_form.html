@@ -1,0 +1,12 @@
+{% extends "agent/base.html" %}
+{% block title %}Add lead{% endblock %}
+{% block content %}
+<div class="head"><div><div class="small muted"><a href="{% url 'leads' %}">← Leads</a></div><h1>Add a lead</h1><div class="sub">For businesses you find yourself — including ones abroad. The agent researches it on the next check-in.</div></div></div>
+<form method="post" class="card" style="max-width:640px">{% csrf_token %}
+  {% for field in form %}
+    <label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}
+    {% for e in field.errors %}<div class="help" style="color:var(--bad)">{{ e }}</div>{% endfor %}
+  {% endfor %}
+  <button class="btn primary" style="margin-top:16px">Add lead</button>
+</form>
+{% endblock %}

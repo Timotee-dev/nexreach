@@ -1,0 +1,135 @@
+{% extends "agent/base.html" %}
+{% block title %}Direct messages{% endblock %}
+{% block content %}
+<div class="head"><div><h1>Direct messages</h1><div class="sub">Good-fit businesses with no email, easiest to reach first. Each has a message written for it. <b>WhatsApp</b> opens the chat with the message typed; <b>Instagram</b>, <b>Facebook</b> and <b>LinkedIn</b> copy the message and open their account — just paste and send. Then click <b>Mark as sent</b>.</div></div></div>
+
+<div class="row small" style="margin:-6px 0 16px;gap:16px">
+  <span><b>{{ counts.whatsapp }}</b> <span class="muted">confirmed WhatsApp</span></span>
+  <span><b>{{ counts.social }}</b> <span class="muted">with social accounts</span></span>
+  <span><b>{{ counts.landline }}</b> <span class="muted">landline only (call)</span></span>
+  <span><b>{{ counts.sent }}</b> <span class="muted">messaged</span></span>
+</div>
+<form id="csrf">{% csrf_token %}</form>
+<div id="toast" class="flash success" style="position:fixed;bottom:18px;right:18px;display:none;z-index:9;max-width:340px"></div>
+
+<div class="grid" style="gap:12px">
+{% for l in leads %}
+  {% with kind=l.phone_kind %}
+  <div class="card" id="lead-{{ l.pk }}" {% if l.whatsapp_sent_at %}style="opacity:.55"{% endif %}>
+    <div class="spread" style="align-items:flex-start">
+      <div>
+        <h3><a href="{% url 'lead_detail' l.pk %}">{{ l.name }}</a></h3>
+        <div class="muted small">{{ l.category }}{% if l.city %} · {{ l.city }}{% endif %}{% if l.market and l.market.name not in l.city %} · {{ l.market.name }}{% endif %} · fit {{ l.fit_score|default:"—" }}</div>
+      </div>
+      <div class="small" style="text-align:right">
+        {% if l.phone %}
+          <a href="tel:{{ l.phone }}">{{ l.phone }}</a>
+          <div style="margin-top:3px">
+            {% if kind == "whatsapp" %}<span class="pill interested">WhatsApp ✓</span>
+            {% elif kind == "mobile" %}<span class="pill qualified">Mobile</span>
+            {% elif kind == "landline" %}<span class="pill">Landline — call</span>
+            {% else %}<span class="pill">WhatsApp unknown</span>{% endif %}
+          </div>
+        {% endif %}
+        {% if l.whatsapp_sent_at %}<div style="margin-top:3px"><span class="pill interested">Messaged{% if l.dm_channel %} on {{ l.dm_channel|title }}{% endif %} · {{ l.whatsapp_sent_at|date:"j M" }}</span></div>{% endif %}
+      </div>
+    </div>
+
+    {% if l.whatsapp_message %}
+      <textarea class="wa-text" data-lead="{{ l.pk }}" rows="5" style="margin-top:10px">{{ l.whatsapp_message }}</textarea>
+      <div class="row" style="margin-top:10px">
+        {% if l.whatsapp_number %}
+          <button type="button" class="btn {% if kind == 'whatsapp' or kind == 'mobile' %}primary{% endif %} ch-open" data-lead="{{ l.pk }}" data-channel="whatsapp" data-number="{{ l.whatsapp_number }}">WhatsApp</button>
+        {% endif %}
+        {% for net, label, profile, dm in l.dm_channels %}
+          <button type="button" class="btn {% if not l.whatsapp_number and forloop.first %}primary{% endif %} ch-open" data-lead="{{ l.pk }}" data-channel="{{ net }}" data-url="{{ dm }}">{{ label }}</button>
+        {% endfor %}
+        {% if kind == "landline" %}<a class="btn" href="tel:{{ l.phone }}" data-lead="{{ l.pk }}">Call</a>{% endif %}
+        <form method="post" action="{% url 'lead_action' l.pk %}" class="row">{% csrf_token %}
+          <input type="hidden" name="next" value="call_list">
+          <input type="hidden" name="channel" class="ch-picked" data-lead="{{ l.pk }}" value="{% if l.whatsapp_number %}whatsapp{% elif l.dm_channels %}{{ l.dm_channels.0.0 }}{% else %}call{% endif %}">
+          {% if l.whatsapp_sent_at %}
+            <button class="btn" name="action" value="whatsapp_unsent">Undo sent</button>
+          {% else %}
+            <button class="btn" name="action" value="whatsapp_sent">Mark as sent</button>
+          {% endif %}
+          <button class="btn ghost" name="action" value="whatsapp_write">Rewrite</button>
+        </form>
+      </div>
+    {% elif l.phone or l.socials %}
+      <div class="muted small" style="margin-top:10px">Opening angle: {{ l.hook|default:l.fit_reason|truncatechars:160 }}</div>
+      <form method="post" action="{% url 'lead_action' l.pk %}" class="row" style="margin-top:10px">{% csrf_token %}
+        <input type="hidden" name="next" value="call_list">
+        <button class="btn primary" name="action" value="whatsapp_write">Write message</button>
+        {% for net, label, profile, dm in l.dm_channels %}<a class="btn" href="{{ profile }}" target="_blank" rel="noopener">{{ label }}</a>{% endfor %}
+      </form>
+      <div class="help">The agent also writes these automatically on each check-in.</div>
+    {% endif %}
+
+    {% if not l.socials and not l.whatsapp_sent_at %}
+      <div class="row small" style="margin-top:10px">
+        <span class="muted">Find them on:</span>
+        <a class="btn sm ghost" href="https://www.google.com/search?q={{ l.name|urlencode }}+{{ l.city|urlencode }}+site%3Ainstagram.com" target="_blank" rel="noopener">Instagram</a>
+        <a class="btn sm ghost" href="https://www.google.com/search?q={{ l.name|urlencode }}+{{ l.city|urlencode }}+site%3Afacebook.com" target="_blank" rel="noopener">Facebook</a>
+        <a class="btn sm ghost" href="https://www.google.com/search?q={{ l.name|urlencode }}+{{ l.city|urlencode }}+site%3Alinkedin.com" target="_blank" rel="noopener">LinkedIn</a>
+        <a class="btn sm ghost" href="{% url 'lead_detail' l.pk %}#socials">Add what you find</a>
+      </div>
+    {% endif %}
+  </div>
+  {% endwith %}
+{% empty %}
+  <div class="card empty">Nobody here yet.</div>
+{% endfor %}
+</div>
+
+<script>
+(function () {
+  var token = document.querySelector('#csrf input[name=csrfmiddlewaretoken]').value;
+  var toast = document.getElementById('toast'), toastTimer;
+  function say(text) {
+    toast.textContent = text; toast.style.display = 'block';
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { toast.style.display = 'none'; }, 4000);
+  }
+  function box(id) { return document.querySelector('.wa-text[data-lead="' + id + '"]'); }
+  function save(id) {
+    var body = new FormData();
+    body.append('action', 'whatsapp_save');
+    body.append('whatsapp_message', box(id).value);
+    return fetch('/leads/' + id + '/action/', {
+      method: 'POST', body: body, keepalive: true,
+      headers: {'X-CSRFToken': token, 'X-Requested-With': 'fetch'}
+    });
+  }
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    var t = document.createElement('textarea'); t.value = text; document.body.appendChild(t);
+    t.select(); document.execCommand('copy'); t.remove(); return Promise.resolve();
+  }
+  document.querySelectorAll('.ch-open').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var id = btn.dataset.lead, text = box(id).value, channel = btn.dataset.channel;
+      var picked = document.querySelector('.ch-picked[data-lead="' + id + '"]');
+      if (picked) picked.value = channel;
+      save(id);
+      if (channel === 'whatsapp') {
+        window.open('https://wa.me/' + btn.dataset.number + '?text=' + encodeURIComponent(text), '_blank', 'noopener');
+        say('WhatsApp opened with your message typed. Press send, then “Mark as sent”.');
+      } else {
+        // Instagram / Facebook / LinkedIn links can't pre-type text, so copy it for pasting.
+        copy(text).then(function () {
+          window.open(btn.dataset.url, '_blank', 'noopener');
+          say('Message copied. Paste it into the chat (Ctrl+V), send, then “Mark as sent”.');
+        });
+      }
+    });
+  });
+  document.querySelectorAll('.wa-text').forEach(function (b) {
+    var timer;
+    b.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { save(b.dataset.lead); }, 800);  // auto-save edits
+    });
+  });
+})();
+</script>
+{% endblock %}

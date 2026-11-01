@@ -1,0 +1,26 @@
+{% extends "agent/base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="head"><div><h1>Settings</h1><div class="sub">What you sell, who to target, when to send, and how hard the agent works. Gmail and Claude are set in your <code>.env</code> file. Countries and cities are on the <a href="{% url 'markets' %}">Markets</a> page.</div></div></div>
+{% if form.non_field_errors %}<div class="flash error">{{ form.non_field_errors|join:" " }}</div>{% endif %}
+<form method="post" class="grid g2" style="align-items:start">{% csrf_token %}
+  {% for title, fields in sections %}
+  <div class="card">
+    <h2>{{ title }}</h2>
+    {% for field in fields %}
+      {% if field.field.widget.input_type == "checkbox" %}
+        <label class="row" style="margin-top:14px">{{ field }} <span>{{ field.label }}</span></label>
+      {% else %}
+        <label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}
+      {% endif %}
+      {% if field.help_text %}<div class="help">{{ field.help_text }}</div>{% endif %}
+      {% for e in field.errors %}<div class="help" style="color:var(--bad)">{{ e }}</div>{% endfor %}
+    {% endfor %}
+    {% if title == "Sectors to search" %}
+      <div class="help" style="margin-top:10px">More sectors: office=it · office=consulting · office=property_management · office=employment_agency · amenity=school · amenity=college · healthcare=physiotherapist · shop=jewelry · shop=furniture · craft=carpenter · office=engineer · office=logistics</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  <div><button class="btn primary">Save settings</button></div>
+</form>
+{% endblock %}

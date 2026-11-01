@@ -1,0 +1,36 @@
+{% extends "agent/base.html" %}
+{% block title %}Markets{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Markets</h1><div class="sub">Countries the agent searches and emails. Each one uses its own time zone and phone format; cold emails go out {{ config.send_window_label }}.</div></div>
+  <a class="btn" href="/admin/agent/market/add/">+ Add a country</a>
+</div>
+{% if not config.postal_address %}<div class="flash error">Add your postal address in <a href="{% url 'settings' %}">Settings</a> — most countries require it in cold emails, and those emails stay on hold until it's set.</div>{% endif %}
+<div class="grid" style="gap:12px">
+{% for m, local, open in table %}
+  <div class="card">
+    <div class="spread">
+      <div>
+        <h2>{{ m.name }} {% if m.enabled %}<span class="pill interested">On</span>{% else %}<span class="pill">Off</span>{% endif %}</h2>
+        <div class="muted small" style="margin-top:4px">{{ m.city_list|length }} cities · {{ m.currency }} · +{{ m.calling_code }} · {{ local }} there ({% if open %}<span style="color:var(--good)">sending hours</span>{% else %}outside sending hours{% endif %})</div>
+      </div>
+      <form method="post" class="row">{% csrf_token %}
+        <input type="hidden" name="market" value="{{ m.pk }}">
+        {% if m.enabled %}<button class="btn" name="enabled" value="0">Pause</button>{% else %}<button class="btn primary" name="enabled" value="1">Enable</button>{% endif %}
+        <a class="btn ghost" href="/admin/agent/market/{{ m.pk }}/change/">Edit cities</a>
+      </form>
+    </div>
+    <div class="row small" style="margin-top:10px;gap:18px">
+      <span><b>{{ m.lead_count }}</b> <span class="muted">leads</span></span>
+      <span><b>{{ m.contacted }}</b> <span class="muted">contacted</span></span>
+      <span><b>{{ m.replied }}</b> <span class="muted">replied</span></span>
+      <a class="muted" href="{% url 'leads' %}?q={{ m.name|urlencode }}">View leads →</a>
+    </div>
+    {% if m.rules_note %}<div class="help" style="margin-top:8px">⚖ {{ m.rules_note }}</div>{% endif %}
+    <div class="help">{{ m.city_list|join:" · " }}</div>
+  </div>
+{% empty %}
+  <div class="card empty">No markets yet. Run <code>python manage.py migrate</code>.</div>
+{% endfor %}
+</div>
+{% endblock %}

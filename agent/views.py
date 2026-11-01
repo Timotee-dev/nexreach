@@ -1,0 +1,302 @@
+from django.contrib import messages as flash
+from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
+from django.db.models import Case, Count, F, IntegerField, Q, Value, When
+from django.http import JsonResponse
+from django.urls import reverse
+from django.utils import timezone
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_POST
+
+from .forms import ConfigForm, LeadContactForm, LeadForm
+from .models import Activity, AgentConfig, Lead, Market, Message, Suppression, log
+from .services import research, writer
+from .services.llm import LLMError
+from .services.mailer import sent_today
+
+
+def _nav_counts():
+    return {"pending_count": Message.objects.filter(status=Message.Status.DRAFT).count()}
+
+
+@login_required
+def dashboard(request):
+    config = AgentConfig.get()
+    by_status = dict(Lead.objects.values_list("status").annotate(n=Count("id")))
+    funnel = [
+        ("Found", Lead.objects.count()),
+        ("Researched", Lead.objects.exclude(researched_at=None).count()),
+        ("Qualified", sum(by_status.get(s, 0) for s in ["qualified", "drafted", "contacted", "replied", "interested", "closed", "no_email"])),
+        ("Contacted", Lead.objects.filter(messages__status=Message.Status.SENT).distinct().count()),
+        ("Replied", Lead.objects.filter(messages__direction=Message.Direction.IN).distinct().count()),
+        ("Interested", by_status.get("interested", 0) + by_status.get("closed", 0)),
+    ]
+    top = max([n for _, n in funnel] + [1])
+    context = {
+        "config": config,
+        "funnel": [(label, n, round(n * 100 / top)) for label, n in funnel],
+        "sent_today": sent_today(),
+        "pending": Message.objects.filter(status=Message.Status.DRAFT).select_related("lead")[:5],
+        "approved_count": Message.objects.filter(status=Message.Status.APPROVED).count(),
+        "hot_leads": Lead.objects.filter(status__in=[Lead.Status.INTERESTED, Lead.Status.REPLIED])[:6],
+        "call_list_count": by_status.get("no_email", 0),
+        "activity": Activity.objects.select_related("lead")[:12],
+        **_nav_counts(),
+    }
+    return render(request, "agent/dashboard.html", context)
+
+
+@login_required
+def outbox(request):
+    drafts = Message.objects.filter(status=Message.Status.DRAFT).select_related("lead").order_by("created_at")
+    approved = Message.objects.filter(status=Message.Status.APPROVED).select_related("lead").order_by("created_at")
+    config = AgentConfig.get()
+    context = {
+        "drafts": drafts,
+        "approved": approved,
+        "config": config,
+        "address_missing": not config.postal_address.strip()
+        and Market.objects.filter(enabled=True, requires_postal_address=True).exists(),
+        **_nav_counts(),
+    }
+    return render(request, "agent/outbox.html", context)
+
+
+@login_required
+@require_POST
+def message_action(request, pk):
+    msg = get_object_or_404(Message, pk=pk, direction=Message.Direction.OUT)
+    action = request.POST.get("action")
+    if msg.status not in (Message.Status.DRAFT, Message.Status.APPROVED):
+        flash.error(request, "That email can't be changed any more.")
+        return redirect(request.POST.get("next") or "outbox")
+
+    if action in ("save", "approve"):
+        msg.subject = request.POST.get("subject", msg.subject).strip()[:300]
+        msg.body = request.POST.get("body", msg.body).replace("\r\n", "\n").strip()
+    if action == "approve":
+        msg.status = Message.Status.APPROVED
+        msg.save()
+        log(f"You approved the email to {msg.lead.name}; it goes out on the next check-in.", "success", lead=msg.lead)
+        flash.success(request, f"Approved — the email to {msg.lead.name} will be sent on the next check-in.")
+    elif action == "save":
+        msg.save()
+        flash.success(request, "Saved.")
+    elif action == "unapprove":
+        msg.status = Message.Status.DRAFT
+        msg.save(update_fields=["status"])
+        flash.info(request, "Moved back to drafts.")
+    elif action == "reject":
+        msg.status = Message.Status.REJECTED
+        msg.save(update_fields=["status"])
+        if msg.kind == Message.Kind.INITIAL and msg.lead.status == Lead.Status.DRAFTED:
+            msg.lead.status = Lead.Status.DISQUALIFIED
+            msg.lead.save(update_fields=["status", "updated_at"])
+        flash.info(request, f"Rejected. {msg.lead.name} won't be emailed with this draft.")
+    elif action == "redraft":
+        try:
+            writer.redraft(msg)
+            flash.success(request, "Claude wrote a fresh draft.")
+        except LLMError as exc:
+            msg.status = Message.Status.DRAFT
+            msg.save(update_fields=["status"])
+            flash.error(request, str(exc))
+    return redirect(request.POST.get("next") or "outbox")
+
+
+@login_required
+@require_POST
+def approve_all(request):
+    count = Message.objects.filter(status=Message.Status.DRAFT).update(status=Message.Status.APPROVED)
+    log(f"You approved {count} drafts at once.", "success")
+    flash.success(request, f"Approved {count} emails.")
+    return redirect("outbox")
+
+
+@login_required
+def leads(request):
+    qs = Lead.objects.annotate(msg_count=Count("messages"))
+    status = request.GET.get("status", "")
+    q = request.GET.get("q", "").strip()
+    if status:
+        qs = qs.filter(status=status)
+    if q:
+        qs = qs.filter(Q(name__icontains=q) | Q(email__icontains=q) | Q(city__icontains=q) | Q(category__icontains=q) | Q(market__name__iexact=q))
+    page = Paginator(qs.order_by("-updated_at"), 30).get_page(request.GET.get("page"))
+    counts = dict(Lead.objects.values_list("status").annotate(n=Count("id")))
+    statuses = [(value, label, counts.get(value, 0)) for value, label in Lead.Status.choices]
+    return render(
+        request,
+        "agent/leads.html",
+        {"page": page, "statuses": statuses, "status": status, "q": q, "total": Lead.objects.count(), **_nav_counts()},
+    )
+
+
+@login_required
+def lead_add(request):
+    form = LeadForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        lead = form.save(commit=False)
+        lead.source = "manual"
+        lead.save()
+        log(f"You added {lead.name} by hand.", lead=lead)
+        flash.success(request, f"Added {lead.name}. The agent will research it on the next check-in.")
+        return redirect("lead_detail", pk=lead.pk)
+    return render(request, "agent/lead_form.html", {"form": form, **_nav_counts()})
+
+
+@login_required
+def lead_detail(request, pk):
+    lead = get_object_or_404(Lead, pk=pk)
+    form = LeadContactForm(request.POST or None, instance=lead)
+    if request.method == "POST" and form.is_valid():
+        lead = form.save()
+        if lead.status == Lead.Status.NO_EMAIL and lead.email:
+            lead.status = Lead.Status.QUALIFIED
+            lead.save(update_fields=["status", "updated_at"])
+        flash.success(request, "Saved.")
+        return redirect("lead_detail", pk=lead.pk)
+    return render(
+        request,
+        "agent/lead_detail.html",
+        {
+            "lead": lead,
+            "form": form,
+            "thread": lead.messages.exclude(status=Message.Status.REJECTED).order_by("created_at"),
+            "statuses": Lead.Status.choices,
+            "suppressed": Suppression.blocked(lead.email),
+            "social_fields": [("instagram", "Instagram"), ("facebook", "Facebook"), ("linkedin", "LinkedIn"), ("x", "X"), ("tiktok", "TikTok")],
+            **_nav_counts(),
+        },
+    )
+
+
+@login_required
+@require_POST
+def lead_action(request, pk):
+    lead = get_object_or_404(Lead, pk=pk)
+    action = request.POST.get("action")
+    try:
+        if action == "research":
+            research.research_lead(lead)
+            flash.success(request, f"Research done: fit {lead.fit_score}/100.")
+        elif action == "draft":
+            if not lead.email:
+                flash.error(request, "Add an email address first.")
+            elif Suppression.blocked(lead.email):
+                flash.error(request, "This address is on the do-not-contact list.")
+            else:
+                writer.draft_initial(lead)
+                flash.success(request, "Draft ready in the approval queue.")
+        elif action == "status":
+            new = request.POST.get("status")
+            if new in Lead.Status.values:
+                lead.status = new
+                lead.save(update_fields=["status", "updated_at"])
+                flash.success(request, f"Status set to {lead.get_status_display()}.")
+        elif action == "suppress":
+            if lead.email:
+                Suppression.objects.get_or_create(email=lead.email.lower(), defaults={"reason": "manual"})
+            lead.status = Lead.Status.UNSUBSCRIBED
+            lead.save(update_fields=["status", "updated_at"])
+            lead.messages.filter(status__in=[Message.Status.DRAFT, Message.Status.APPROVED]).update(
+                status=Message.Status.REJECTED
+            )
+            flash.info(request, "Added to the do-not-contact list.")
+        elif action == "whatsapp_write":
+            writer.draft_whatsapp(lead)
+            flash.success(request, f"New message written for {lead.name}.")
+        elif action == "whatsapp_save":
+            lead.whatsapp_message = request.POST.get("whatsapp_message", "").replace("\r\n", "\n").strip()[:1500]
+            lead.save(update_fields=["whatsapp_message", "updated_at"])
+            if request.headers.get("x-requested-with") == "fetch":
+                return JsonResponse({"ok": True})
+            flash.success(request, "Message saved.")
+        elif action == "whatsapp_sent":
+            channel = request.POST.get("channel", "")[:20] or "whatsapp"
+            lead.whatsapp_sent_at = timezone.now()
+            lead.last_contacted_at = lead.whatsapp_sent_at
+            lead.dm_channel = channel
+            lead.save(update_fields=["whatsapp_sent_at", "last_contacted_at", "dm_channel", "updated_at"])
+            label = {"whatsapp": "WhatsApp", "call": "phone"}.get(channel, channel.title())
+            log(f"You messaged {lead.name} on {label}.", "success", lead=lead)
+            flash.success(request, f"Marked {lead.name} as messaged on {label}.")
+        elif action == "socials_save":
+            from .contacts import SOCIAL_PATTERNS, social_url
+            socials = {}
+            for network in SOCIAL_PATTERNS:
+                url = social_url(network, request.POST.get(f"social_{network}", ""))
+                if url:
+                    socials[network] = url
+            lead.socials = socials
+            lead.save(update_fields=["socials", "updated_at"])
+            flash.success(request, "Social accounts saved.")
+        elif action == "whatsapp_unsent":
+            lead.whatsapp_sent_at = None
+            lead.save(update_fields=["whatsapp_sent_at", "updated_at"])
+    except LLMError as exc:
+        flash.error(request, str(exc))
+    if request.POST.get("next") == "call_list":
+        return redirect(f"{reverse('call_list')}#lead-{lead.pk}")
+    return redirect("lead_detail", pk=lead.pk)
+
+
+@login_required
+def call_list(request):
+    leads_qs = list(Lead.objects.filter(status=Lead.Status.NO_EMAIL).select_related("market"))
+    # Unsent first, then the easiest to reach (confirmed WhatsApp, social DMs, mobile...), then best fit.
+    leads_qs.sort(key=lambda l: (l.whatsapp_sent_at is not None, l.reach_rank, -(l.fit_score or 0)))
+    counts = {
+        "whatsapp": sum(1 for l in leads_qs if l.phone_kind == "whatsapp"),
+        "social": sum(1 for l in leads_qs if l.socials),
+        "landline": sum(1 for l in leads_qs if l.phone_kind == "landline" and not l.socials),
+        "sent": sum(1 for l in leads_qs if l.whatsapp_sent_at),
+    }
+    return render(request, "agent/call_list.html", {"leads": leads_qs, "counts": counts, **_nav_counts()})
+
+
+@login_required
+def settings_view(request):
+    config = AgentConfig.get()
+    form = ConfigForm(request.POST or None, instance=config)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        flash.success(request, "Settings saved.")
+        return redirect("settings")
+    groups = [
+        ("You & your offer", ["agent_enabled", "sender_name", "company_name", "company_website", "offer",
+                              "ideal_customer", "writing_rules", "signature", "opt_out_line"]),
+        ("Sectors to search", ["target_categories"]),
+        ("Sending & compliance", ["postal_address", "send_hour_start", "send_hour_end", "send_weekdays_only",
+                                  "home_timezone"]),
+        ("Limits", ["daily_send_limit", "sends_per_tick", "research_per_tick", "drafts_per_tick",
+                    "min_fit_score", "followup_days", "max_followups", "min_new_leads"]),
+    ]
+    sections = [(title, [form[name] for name in names if name in form.fields]) for title, names in groups]
+    return render(request, "agent/settings.html", {"form": form, "sections": sections, **_nav_counts()})
+
+
+@login_required
+def activity(request):
+    page = Paginator(Activity.objects.select_related("lead"), 50).get_page(request.GET.get("page"))
+    return render(request, "agent/activity.html", {"page": page, **_nav_counts()})
+
+
+@login_required
+def markets(request):
+    if request.method == "POST":
+        market = get_object_or_404(Market, pk=request.POST.get("market"))
+        market.enabled = request.POST.get("enabled") == "1"
+        market.save(update_fields=["enabled"])
+        log(f"{'Enabled' if market.enabled else 'Paused'} market: {market.name}.", "success" if market.enabled else "info")
+        flash.success(request, f"{market.name} {'enabled' if market.enabled else 'paused'}.")
+        return redirect("markets")
+    rows = Market.objects.order_by("-enabled", "sort").annotate(
+        lead_count=Count("leads"),
+        contacted=Count("leads", filter=Q(leads__status__in=["contacted", "replied", "interested", "closed", "not_interested"])),
+        replied=Count("leads", filter=Q(leads__status__in=["replied", "interested", "closed"])),
+    )
+    now = {m.pk: m.local_now() for m in rows}
+    config = AgentConfig.get()
+    table = [(m, now[m.pk].strftime("%a %H:%M"), config.within_send_window(now[m.pk])) for m in rows]
+    return render(request, "agent/markets.html", {"table": table, "config": config, **_nav_counts()})
