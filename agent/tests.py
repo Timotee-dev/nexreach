@@ -92,9 +92,9 @@ class DiscoveryTests(TestCase):
         Market.objects.filter(name__in=["United States", "United Kingdom"]).update(enabled=True)
         plan = discovery.search_plan(config)
         first = [(m.name, city.split(",")[0], tag) for m, city, tag in plan[:4]]
-        self.assertEqual(first, [
-            ("United States", "New York", "office=lawyer"), ("United Kingdom", "London", "office=lawyer"),
-            ("United States", "New York", "amenity=dentist"), ("United Kingdom", "London", "amenity=dentist"),
+        self.assertEqual(first, [  # back-to-back searches differ in country AND sector
+            ("United States", "New York", "office=lawyer"), ("United Kingdom", "London", "amenity=dentist"),
+            ("United States", "New York", "amenity=dentist"), ("United Kingdom", "London", "office=lawyer"),
         ])
         with mock.patch.object(discovery, "discover", return_value=0) as d:
             discovery.discover_next(config)
@@ -262,7 +262,7 @@ class LoopTests(TestCase):
         results = loop.tick()
         self.assertEqual(results["researched"], 1)
         self.assertEqual(results["drafted"], 1)
-        self.assertEqual(results["discovered"], 9)  # behind the daily email target: 3 searches
+        self.assertEqual(results["discovered"], 18)  # behind the daily email target: 6 searches
         self.assertTrue(Message.objects.filter(status="draft").exists())
         self.assertFalse(Message.objects.filter(status="sent").exists())  # nothing sent without approval
 
@@ -360,7 +360,10 @@ class GlobalMarketTests(TestCase):
 
     def test_markets_seeded(self):
         from .models import Market
-        self.assertEqual(Market.objects.count(), 27)
+        self.assertEqual(Market.objects.count(), 29)
+        self.assertEqual(Market.objects.filter(enabled=True).count(), 21)
+        self.assertFalse(Market.objects.get(name="Nigeria").enabled)
+        self.assertTrue(Market.objects.get(name="France").enabled)
         self.assertTrue(self.us.enabled and self.uk.enabled)
         self.assertFalse(self.ng.enabled)
         self.assertTrue(Market.objects.get(name="Canada").enabled)
@@ -918,7 +921,7 @@ class MoreSourceTests(TestCase):
         self.client.force_login(user)
         self.client.post(reverse("markets"), {"all": "on"})
         self.assertFalse(Market.objects.filter(enabled=False).exists())
-        self.assertContains(self.client.get(reverse("markets")), "27 of 27 countries on")
+        self.assertContains(self.client.get(reverse("markets")), "29 of 29 countries on")
         self.client.post(reverse("markets"), {"all": "off"})
         self.assertFalse(Market.objects.filter(enabled=True).exists())
         self.assertIn("healthcare=physiotherapist", AgentConfig.get().categories)
@@ -1086,3 +1089,59 @@ class EmailsFirstTests(TestCase):
             lead.refresh_from_db()
         self.assertEqual((dm.status, dead.status, poor.status), ("qualified", "new", "disqualified"))
         self.assertTrue(all(l.email == "x@y.com" for l in (dm, dead, poor)))
+
+
+
+class SectorBalanceTests(TestCase):
+    def setUp(self):
+        from .models import Market
+        Market.objects.exclude(name="United States").update(enabled=False)
+        us = Market.objects.get(name="United States")
+        us.cities = "Houston, United States"
+        us.save()
+        self.us = us
+
+    def test_crowded_sector_waits_its_turn(self):
+        config = AgentConfig.get()
+        config.target_categories = "amenity=dentist\noffice=lawyer\noffice=accountant"
+        for i in range(60):
+            Lead.objects.create(name=f"d{i}", category="dentist", market=self.us)
+        for i in range(5):
+            Lead.objects.create(name=f"l{i}", category="lawyer", market=self.us)
+        with mock.patch.object(discovery, "discover", return_value=0) as d:
+            for _ in range(4):
+                discovery.discover_next(config)
+        tags = [c.args[1] for c in d.call_args_list]
+        self.assertNotIn("amenity=dentist", tags)
+        self.assertEqual(set(tags), {"office=lawyer", "office=accountant"})
+
+    def test_everything_crowded_still_searches(self):
+        config = AgentConfig.get()
+        config.target_categories = "amenity=dentist"
+        for i in range(60):
+            Lead.objects.create(name=f"d{i}", category="dentist", market=self.us)
+        with mock.patch.object(discovery, "discover", return_value=0) as d:
+            discovery.discover_next(config)
+        self.assertEqual(d.call_args.args[1], "amenity=dentist")
+
+
+
+class SpreadTests(TestCase):
+    def test_burst_covers_many_countries_and_sectors(self):
+        from .models import Market
+        config = AgentConfig.get()
+        plan = discovery.search_plan(config)
+        first = plan[:21]
+        self.assertEqual(len({m.name for m, _, _ in first}), 21)   # 21 different countries in a row
+        self.assertGreater(len({t for _, _, t in first}), 15)      # and many different sectors
+        self.assertEqual(config.searches_when_behind, 6)
+
+    @mock.patch("agent.services.discovery.run_overpass", return_value={"elements": []})
+    @mock.patch("agent.services.discovery.city_area_id", return_value=3600000123)
+    def test_city_lookup_is_cached(self, lookup, _):
+        from .models import Market
+        us = Market.objects.get(name="United States")
+        discovery.discover("Houston, United States", "office=lawyer", market=us, contactable_only=True)
+        discovery.discover("Houston, United States", "amenity=dentist", market=us, contactable_only=True)
+        self.assertEqual(lookup.call_count, 1)
+        self.assertEqual(Market.objects.get(pk=us.pk).area_ids["Houston, United States"], 3600000123)

@@ -156,6 +156,9 @@ LOGO_FILE = os.getenv('LOGO_FILE', 'agent/logo.svg')
 
 # Optional extra lead source: Foursquare Places (free for the first 500 searches a month)
 FOURSQUARE_API_KEY = os.getenv('FOURSQUARE_API_KEY', '')
+TESTING = 'test' in sys.argv[1:2]
+if TESTING:
+    FOURSQUARE_API_KEY = ''  # tests never touch your real key or use up your free searches
 FOURSQUARE_API_VERSION = os.getenv('FOURSQUARE_API_VERSION', '2025-06-17')
 
 # Skip email addresses whose domain can't receive mail (needs dnspython). Off while running tests.

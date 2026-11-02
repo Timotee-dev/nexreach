@@ -48,6 +48,20 @@ def _headers():
 CITY_TYPES = {"city", "town", "municipality", "village", "state", "county", "administrative", "suburb", "borough"}
 
 
+def cached_area_id(city: str, market: Market | None) -> int | None:
+    """City boundary lookups rarely change, so remember them per country (saves time and is polite
+    to the free Nominatim service)."""
+    if market is not None:
+        known = (market.area_ids or {}).get(city)
+        if known:
+            return known
+    area_id = city_area_id(city)
+    if area_id and market is not None:
+        market.area_ids = {**(market.area_ids or {}), city: area_id}
+        Market.objects.filter(pk=market.pk).update(area_ids=market.area_ids)
+    return area_id
+
+
 def city_area_id(city: str):
     """Find the OpenStreetMap boundary for a city. Only accepts real places (not shops or
     streets that happen to share the name), most important match first."""
@@ -133,7 +147,7 @@ def parse_element(element: dict, city: str, tag: str) -> dict | None:
 def discover(city: str, tag: str, limit: int = 60, market: Market | None = None, contactable_only: bool | None = None) -> int:
     if contactable_only is None:
         contactable_only = AgentConfig.get().only_contactable
-    area_id = city_area_id(city)
+    area_id = cached_area_id(city, market)
     if not area_id:
         log(f"Couldn't find the area for '{city}' on OpenStreetMap.", "warning")
         return 0
@@ -171,13 +185,16 @@ def search_plan(config: AgentConfig) -> list[tuple[Market, str, str]]:
     instead of exhausting one city first."""
     markets = list(Market.objects.filter(enabled=True))
     longest = max((len(m.city_list) for m in markets), default=0)
+    tags = config.categories
     plan = []
     for i in range(longest):
-        for tag in config.categories:
-            for market in markets:
+        for t in range(len(tags)):
+            for m, market in enumerate(markets):
                 cities = market.city_list
-                if i < len(cities):
-                    plan.append((market, cities[i], tag))
+                if i < len(cities) and tags:
+                    # Shift the sector per country so back-to-back searches cover different
+                    # countries AND different sectors, not one sector everywhere.
+                    plan.append((market, cities[i], tags[(t + m) % len(tags)]))
     return plan
 
 
@@ -195,6 +212,32 @@ def sector_email_rates() -> dict:
         .annotate(scanned=Count("id"), with_email=Count("id", filter=~Q(email="")))
     )
     return {r["category"]: (r["scanned"], r["with_email"] / r["scanned"]) for r in rows if r["scanned"]}
+
+
+SHARE_MIN_LEADS = 50
+
+
+def sector_shares(days: int = 7) -> tuple[dict, int]:
+    """How many business leads each sector produced recently, and the total."""
+    import datetime
+
+    from django.db.models import Count
+    from django.utils import timezone
+
+    since = timezone.now() - datetime.timedelta(days=days)
+    rows = Lead.objects.filter(kind="business", created_at__gte=since).values("category").annotate(n=Count("id"))
+    counts = {r["category"]: r["n"] for r in rows}
+    return counts, sum(counts.values())
+
+
+def is_crowded_sector(tag: str, shares: tuple[dict, int], max_share: int) -> bool:
+    from . import foursquare
+
+    counts, total = shares
+    if total < SHARE_MIN_LEADS or max_share >= 100:
+        return False
+    n = sum(counts.get(c, 0) for c in {tag.split("=", 1)[-1].replace("_", " "), foursquare.search_words(tag)})
+    return n / total > max_share / 100
 
 
 def is_poor_sector(tag: str, rates: dict) -> bool:
@@ -218,11 +261,14 @@ def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
         log("Enable at least one market (Markets page) and add sectors in Settings so the agent can find businesses.", "warning")
         return 0
     rates = sector_email_rates() if config.skip_poor_sectors else {}
-    for _ in range(len(plan)):
-        market, city, tag = plan[config.discovery_cursor % len(plan)]
-        if not rates or not is_poor_sector(tag, rates):
-            break
-        config.discovery_cursor = (config.discovery_cursor + 1) % len(plan)  # sector rarely shows emails: skip
+    shares = sector_shares()
+    # Pick the next search in turn, preferring (1) sectors that show emails and aren't already
+    # over-represented, then (2) any sector that shows emails, then (3) simply the next one.
+    order = [(config.discovery_cursor + i) % len(plan) for i in range(len(plan))]
+    good = [i for i in order if not (rates and is_poor_sector(plan[i][2], rates))]
+    balanced = [i for i in good if not is_crowded_sector(plan[i][2], shares, config.max_sector_share)]
+    config.discovery_cursor = (balanced or good or order)[0]
+    market, city, tag = plan[config.discovery_cursor]
     found = 0
     if foursquare.available(config):
         try:

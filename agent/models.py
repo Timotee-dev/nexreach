@@ -65,6 +65,7 @@ class Market(models.Model):
     )
     rules_note = models.CharField(max_length=300, blank=True, help_text="Cold-email rules to keep in mind here.")
     language = models.CharField(max_length=40, default="English", help_text="Language Claude writes in for this country.")
+    area_ids = models.JSONField(default=dict, blank=True, editable=False)
     sort = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
@@ -153,7 +154,10 @@ class AgentConfig(models.Model):
         help_text="Also spend Claude on businesses with no email (for direct messages). Off = emails first.",
     )
     searches_when_behind = models.PositiveIntegerField(
-        default=3, help_text="Map searches per check-in while today's email target isn't met."
+        default=6, help_text="Map searches per check-in while today's email target isn't met."
+    )
+    max_sector_share = models.PositiveIntegerField(
+        default=20, help_text="Max % of the last 7 days' leads one sector may take before other sectors go first."
     )
     skip_poor_sectors = models.BooleanField(
         default=True, help_text="Skip sectors where scanned websites rarely show an email."
