@@ -42,6 +42,9 @@ HIGH_VALUE_SECTORS = "\n".join([
     "office=estate_agent", "office=financial_advisor", "office=insurance", "office=architect",
     "amenity=veterinary", "craft=hvac", "craft=plumber", "craft=roofer", "craft=electrician",
     "shop=car", "tourism=hotel", "leisure=fitness_centre",
+    "healthcare=physiotherapist", "healthcare=optometrist", "office=property_management", "office=consulting",
+    "office=employment_agency", "office=travel_agent", "amenity=school", "amenity=college", "craft=carpenter",
+    "shop=jewelry", "shop=furniture", "tourism=guest_house",
 ])
 
 
@@ -61,6 +64,7 @@ class Market(models.Model):
         default=True, help_text="Hold cold emails until your postal address is set in Settings."
     )
     rules_note = models.CharField(max_length=300, blank=True, help_text="Cold-email rules to keep in mind here.")
+    language = models.CharField(max_length=40, default="English", help_text="Language Claude writes in for this country.")
     sort = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
@@ -137,6 +141,39 @@ class AgentConfig(models.Model):
         help_text="Used for leads that aren't linked to a market.",
     )
 
+    # Extra business source
+    foursquare_monthly_limit = models.PositiveIntegerField(
+        default=450,
+        help_text="Max Foursquare searches per month (500 are free). Needs FOURSQUARE_API_KEY in .env.",
+    )
+
+    # Gig postings: people asking for a developer
+    gigs_enabled = models.BooleanField(default=True, help_text="Look for posts from people who want something built.")
+    gig_subreddits = models.TextField(
+        default="forhire\nfreelance_forhire\nhiring\njobbit\nWebDeveloperJobs",
+        help_text="Subreddits to check for [Hiring] posts, one per line (without r/).",
+    )
+    hn_gigs_enabled = models.BooleanField(default=True, help_text="Check Hacker News' monthly 'Seeking freelancer' thread.")
+    gig_keywords = models.TextField(
+        default="website\nweb app\nweb developer\ndeveloper\nprogrammer\nlanding page\nwordpress\nshopify\n"
+                "django\npython\nreact\nnext.js\njavascript\nfull stack\nbackend\nfrontend\napp\nsaas\n"
+                "dashboard\nportal\nautomation\nchatbot\nai\napi\nscraper\nsoftware",
+        help_text="A post must mention at least one of these, one per line.",
+    )
+    remotive_enabled = models.BooleanField(
+        default=True, help_text="Contract and freelance software listings from Remotive (checked 4 times a day)."
+    )
+    mastodon_enabled = models.BooleanField(default=True, help_text="Look for hiring posts on Mastodon hashtags.")
+    mastodon_tags = models.TextField(
+        default="hiring\nfreelance\nhiringnow\nwebdevelopment",
+        help_text="Hashtags to check (without #), one per line.",
+    )
+    mastodon_instance = models.CharField(max_length=100, default="mastodon.social")
+    remotive_checked_at = models.DateTimeField(null=True, blank=True)
+    gig_max_age_days = models.PositiveIntegerField(default=7, help_text="Ignore posts older than this.")
+    gig_check_minutes = models.PositiveIntegerField(default=60, help_text="How often to look for new gigs.")
+    gigs_checked_at = models.DateTimeField(null=True, blank=True)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -154,6 +191,18 @@ class AgentConfig(models.Model):
     @property
     def categories(self):
         return [c.strip() for c in self.target_categories.splitlines() if "=" in c]
+
+    @property
+    def subreddits(self):
+        return [s.strip().removeprefix("r/").strip("/") for s in self.gig_subreddits.splitlines() if s.strip()]
+
+    @property
+    def hashtags(self):
+        return [t.strip().lstrip("#") for t in self.mastodon_tags.splitlines() if t.strip()]
+
+    @property
+    def keywords(self):
+        return [k.strip().lower() for k in self.gig_keywords.splitlines() if k.strip()]
 
     def clean(self):
         if not 0 <= self.send_hour_start < self.send_hour_end <= 24:
@@ -180,8 +229,8 @@ class AgentConfig(models.Model):
 
     @staticmethod
     def focus_filter():
-        """Leads the agent works on: those in enabled markets, plus ones you added by hand."""
-        return models.Q(source="manual") | models.Q(market__enabled=True)
+        """Leads the agent works on: those in enabled markets, gig posts, and ones you added by hand."""
+        return models.Q(source="manual") | models.Q(market__enabled=True) | models.Q(kind="gig")
 
 
 class Lead(models.Model):
@@ -208,6 +257,13 @@ class Lead(models.Model):
     email = models.EmailField(blank=True)
 
     market = models.ForeignKey(Market, null=True, blank=True, on_delete=models.SET_NULL, related_name="leads")
+    kind = models.CharField(max_length=10, default="business", choices=[("business", "Business"), ("gig", "Gig post")], db_index=True)
+    post_url = models.URLField(max_length=500, blank=True)
+    post_title = models.CharField(max_length=300, blank=True)
+    post_text = models.TextField(blank=True)
+    post_author = models.CharField(max_length=100, blank=True)
+    posted_at = models.DateTimeField(null=True, blank=True)
+    budget = models.CharField(max_length=120, blank=True)
     source = models.CharField(max_length=30, default="manual")
     source_id = models.CharField(max_length=100, blank=True, db_index=True)
 
@@ -334,6 +390,31 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.get_kind_display()} — {self.lead}"
+
+
+class ApiUsage(models.Model):
+    """Calls made to metered services, per calendar month."""
+
+    name = models.CharField(max_length=40)
+    month = models.CharField(max_length=7)  # e.g. 2026-11
+    count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = [("name", "month")]
+
+    @staticmethod
+    def this_month():
+        return timezone.now().strftime("%Y-%m")
+
+    @classmethod
+    def used(cls, name):
+        row = cls.objects.filter(name=name, month=cls.this_month()).first()
+        return row.count if row else 0
+
+    @classmethod
+    def add(cls, name, n=1):
+        row, _ = cls.objects.get_or_create(name=name, month=cls.this_month())
+        cls.objects.filter(pk=row.pk).update(count=models.F("count") + n)
 
 
 class Suppression(models.Model):

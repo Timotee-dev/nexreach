@@ -14,7 +14,7 @@ class StyledMixin:
 class ConfigForm(StyledMixin, forms.ModelForm):
     class Meta:
         model = AgentConfig
-        exclude = ["discovery_cursor"]
+        exclude = ["discovery_cursor", "gigs_checked_at", "remotive_checked_at"]
 
 
 class LeadForm(StyledMixin, forms.ModelForm):

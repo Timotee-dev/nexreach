@@ -1,0 +1,121 @@
+{% extends "agent/base.html" %}
+{% block title %}Gigs{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Gigs</h1><div class="sub">People who publicly asked for a developer — from Reddit ({{ config.subreddits|join:", "|default:"no subreddits set" }}){% if config.hn_gigs_enabled %}, Hacker News{% endif %}{% if config.remotive_enabled %}, Remotive contract jobs{% endif %}{% if config.mastodon_enabled %}, Mastodon{% endif %}. Each has a reply written for it. Reply fast: the first good answer usually wins.</div></div>
+  <form method="post">{% csrf_token %}<button class="btn" name="action" value="check_now">Check for new gigs now</button></form>
+</div>
+
+<div class="row small" style="margin:-6px 0 16px;gap:16px">
+  <span><b>{{ counts.good }}</b> <span class="muted">good fits to reply to</span></span>
+  <span><b>{{ counts.waiting }}</b> <span class="muted">being checked</span></span>
+  <span><b>{{ counts.replied }}</b> <span class="muted">replied</span></span>
+  <span><b>{{ counts.skipped }}</b> <span class="muted">not a fit</span></span>
+  {% if show_all %}<a class="muted" href="{% url 'gigs' %}">Hide poor fits</a>{% else %}<a class="muted" href="?all=1">Show all</a>{% endif %}
+</div>
+<form id="csrf">{% csrf_token %}</form>
+<div id="toast" class="flash success" style="position:fixed;bottom:18px;right:18px;display:none;z-index:9;max-width:340px"></div>
+
+<div class="grid" style="gap:12px">
+{% for l in leads %}
+  <div class="card" id="lead-{{ l.pk }}" {% if l.whatsapp_sent_at or l.status == 'disqualified' %}style="opacity:.55"{% endif %}>
+    <div class="spread" style="align-items:flex-start">
+      <div style="min-width:0">
+        <h3><a href="{{ l.post_url }}" target="_blank" rel="noopener">{{ l.post_title|default:l.name }}</a></h3>
+        <div class="muted small">
+          {% if l.source == "reddit" %}Reddit{% elif l.source == "hn" %}Hacker News{% elif l.source == "remotive" %}Contract job via <a href="{{ l.post_url }}" target="_blank" rel="noopener">Remotive</a>{% elif l.source == "mastodon" %}Mastodon{% else %}{{ l.source }}{% endif %}
+          · {{ l.post_author|default:"unknown" }}
+          {% if l.posted_at %}· {{ l.posted_at|timesince }} ago{% endif %}
+          {% if l.fit_score is not None %}· fit {{ l.fit_score }}{% endif %}
+          {% if l.budget %}· <b style="color:var(--good)">budget: {{ l.budget }}</b>{% endif %}
+        </div>
+      </div>
+      <div class="small" style="text-align:right">
+        {% if l.whatsapp_sent_at %}<span class="pill interested">Replied{% if l.dm_channel %} via {{ l.dm_channel|title }}{% endif %} · {{ l.whatsapp_sent_at|date:"j M" }}</span>
+        {% elif l.status == 'new' %}<span class="pill">Checking…</span>{% endif %}
+      </div>
+    </div>
+    {% if l.research_summary %}<div class="small" style="margin-top:8px"><span class="muted">They need:</span> {{ l.research_summary }}</div>{% endif %}
+    <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">Read their post</summary><div class="email small">{{ l.post_text|default:"(no text)"|truncatechars:3000 }}</div></details>
+
+    {% if l.whatsapp_message %}
+      <textarea class="wa-text" data-lead="{{ l.pk }}" rows="7" style="margin-top:10px">{{ l.whatsapp_message }}</textarea>
+      <div class="row" style="margin-top:10px">
+        {% if l.source == "reddit" and l.post_author %}
+          <button type="button" class="btn primary gig-open" data-lead="{{ l.pk }}" data-channel="reddit"
+            data-author="{{ l.post_author }}" data-subject="Re: {{ l.post_title|truncatechars:90 }}">Reddit message</button>
+        {% endif %}
+        <button type="button" class="btn {% if l.source != 'reddit' %}primary{% endif %} gig-open" data-lead="{{ l.pk }}" data-channel="{{ l.source }}"
+          data-url="{% if l.source == 'hn' %}https://news.ycombinator.com/reply?id={{ l.source_id|cut:'hn:' }}{% else %}{{ l.post_url }}{% endif %}">
+          {% if l.source == "hn" %}Reply on Hacker News{% elif l.source == "remotive" %}Apply on Remotive{% elif l.source == "mastodon" %}Reply on Mastodon{% else %}Open post{% endif %}</button>
+        {% if l.email %}
+        <form method="post" action="{% url 'lead_action' l.pk %}">{% csrf_token %}<input type="hidden" name="next" value="gigs">
+          <button class="btn" name="action" value="gig_email" title="{{ l.email }}">Email them</button></form>
+        {% endif %}
+        <form method="post" action="{% url 'lead_action' l.pk %}" class="row">{% csrf_token %}
+          <input type="hidden" name="next" value="gigs">
+          <input type="hidden" name="channel" class="ch-picked" data-lead="{{ l.pk }}" value="{{ l.source }}">
+          {% if l.whatsapp_sent_at %}
+            <button class="btn" name="action" value="whatsapp_unsent">Undo</button>
+          {% else %}
+            <button class="btn" name="action" value="whatsapp_sent">Mark as replied</button>
+          {% endif %}
+          <button class="btn ghost" name="action" value="whatsapp_write">Rewrite</button>
+        </form>
+      </div>
+      {% if l.email %}<div class="help">They listed an email ({{ l.email }}). “Email them” puts the reply in Approve emails, sent from your Nexlab Gmail once you approve.</div>{% endif %}
+    {% endif %}
+  </div>
+{% empty %}
+  <div class="card empty">No gigs yet. They're checked every {{ config.gig_check_minutes }} minutes while the agent runs — or click “Check for new gigs now”.</div>
+{% endfor %}
+</div>
+
+<script>
+(function () {
+  var token = document.querySelector('#csrf input[name=csrfmiddlewaretoken]').value;
+  var toast = document.getElementById('toast'), toastTimer;
+  function say(text) {
+    toast.textContent = text; toast.style.display = 'block';
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { toast.style.display = 'none'; }, 4500);
+  }
+  function box(id) { return document.querySelector('.wa-text[data-lead="' + id + '"]'); }
+  function save(id) {
+    var body = new FormData();
+    body.append('action', 'whatsapp_save');
+    body.append('whatsapp_message', box(id).value);
+    return fetch('/leads/' + id + '/action/', {method: 'POST', body: body, keepalive: true,
+      headers: {'X-CSRFToken': token, 'X-Requested-With': 'fetch'}});
+  }
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    var t = document.createElement('textarea'); t.value = text; document.body.appendChild(t);
+    t.select(); document.execCommand('copy'); t.remove(); return Promise.resolve();
+  }
+  document.querySelectorAll('.gig-open').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var id = btn.dataset.lead, text = box(id).value;
+      var picked = document.querySelector('.ch-picked[data-lead="' + id + '"]');
+      if (picked) picked.value = btn.dataset.channel;
+      save(id);
+      if (btn.dataset.author) {
+        // Reddit's compose page accepts the recipient, subject and message in the link.
+        var url = 'https://old.reddit.com/message/compose/?to=' + encodeURIComponent(btn.dataset.author) +
+          '&subject=' + encodeURIComponent(btn.dataset.subject) + '&message=' + encodeURIComponent(text);
+        window.open(url, '_blank', 'noopener');
+        say('Reddit opened with your message filled in. Check it, press send, then “Mark as replied”.');
+      } else {
+        copy(text).then(function () {
+          window.open(btn.dataset.url, '_blank', 'noopener');
+          say('Reply copied. Paste it (Ctrl+V), post it, then “Mark as replied”.');
+        });
+      }
+    });
+  });
+  document.querySelectorAll('.wa-text').forEach(function (b) {
+    var timer;
+    b.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(function () { save(b.dataset.lead); }, 800); });
+  });
+})();
+</script>
+{% endblock %}

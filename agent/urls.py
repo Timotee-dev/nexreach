@@ -12,6 +12,7 @@ urlpatterns = [
     path("leads/<int:pk>/", views.lead_detail, name="lead_detail"),
     path("leads/<int:pk>/action/", views.lead_action, name="lead_action"),
     path("call-list/", views.call_list, name="call_list"),
+    path("gigs/", views.gigs_view, name="gigs"),
     path("markets/", views.markets, name="markets"),
     path("settings/", views.settings_view, name="settings"),
     path("activity/", views.activity, name="activity"),

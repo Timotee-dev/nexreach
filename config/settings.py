@@ -152,3 +152,7 @@ HTTP_USER_AGENT = os.getenv('HTTP_USER_AGENT', f'NexReach/1.0 (+{GMAIL_ADDRESS o
 
 # Your logo (sidebar + browser tab). Put your file in agent/static/agent/ and set LOGO_FILE=agent/yourfile.png in .env
 LOGO_FILE = os.getenv('LOGO_FILE', 'agent/logo.svg')
+
+# Optional extra lead source: Foursquare Places (free for the first 500 searches a month)
+FOURSQUARE_API_KEY = os.getenv('FOURSQUARE_API_KEY', '')
+FOURSQUARE_API_VERSION = os.getenv('FOURSQUARE_API_VERSION', '2025-06-17')

@@ -162,14 +162,23 @@ def search_plan(config: AgentConfig) -> list[tuple[Market, str, str]]:
 
 
 def discover_next(config: AgentConfig | None = None, limit: int = 40) -> int:
-    """Search the next country/city/sector in rotation."""
+    """Search the next country/city/sector in rotation, on Foursquare (when set up and within the
+    monthly free allowance) and on OpenStreetMap."""
+    from . import foursquare
+
     config = config or AgentConfig.get()
     plan = search_plan(config)
     if not plan:
         log("Enable at least one market (Markets page) and add sectors in Settings so the agent can find businesses.", "warning")
         return 0
     market, city, tag = plan[config.discovery_cursor % len(plan)]
-    found = discover(city, tag, limit, market=market)  # raises OverpassBusy -> same search is retried next time
+    found = 0
+    if foursquare.available(config):
+        try:
+            found += foursquare.discover(city, tag, market)
+        except (foursquare.FoursquareError, requests.RequestException) as exc:
+            log(f"Foursquare: {exc}", "warning")
+    found += discover(city, tag, limit, market=market)  # raises OverpassBusy -> same search is retried next time
     config.discovery_cursor = (config.discovery_cursor + 1) % len(plan)
     config.save(update_fields=["discovery_cursor"])
     return found

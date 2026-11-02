@@ -97,6 +97,7 @@ label{display:block;font-weight:500;margin:12px 0 6px}
       <a href="{% url 'outbox' %}" class="{% if u == 'outbox' %}on{% endif %}">Approve emails {% if pending_count %}<span class="badge">{{ pending_count }}</span>{% endif %}</a>
       <a href="{% url 'leads' %}" class="{% if u == 'leads' or u == 'lead_detail' or u == 'lead_add' %}on{% endif %}">Leads</a>
       <a href="{% url 'call_list' %}" class="{% if u == 'call_list' %}on{% endif %}">Direct messages</a>
+      <a href="{% url 'gigs' %}" class="{% if u == 'gigs' %}on{% endif %}">Gigs {% if gig_count %}<span class="badge">{{ gig_count }}</span>{% endif %}</a>
       <a href="{% url 'markets' %}" class="{% if u == 'markets' %}on{% endif %}">Markets</a>
       <a href="{% url 'activity' %}" class="{% if u == 'activity' %}on{% endif %}">Activity</a>
       <a href="{% url 'settings' %}" class="{% if u == 'settings' %}on{% endif %}">Settings</a>

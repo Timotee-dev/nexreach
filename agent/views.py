@@ -10,13 +10,16 @@ from django.views.decorators.http import require_POST
 
 from .forms import ConfigForm, LeadContactForm, LeadForm
 from .models import Activity, AgentConfig, Lead, Market, Message, Suppression, log
-from .services import research, writer
+from .services import gigs as gig_service, research, writer
 from .services.llm import LLMError
 from .services.mailer import sent_today
 
 
 def _nav_counts():
-    return {"pending_count": Message.objects.filter(status=Message.Status.DRAFT).count()}
+    return {
+        "pending_count": Message.objects.filter(status=Message.Status.DRAFT).count(),
+        "gig_count": Lead.objects.filter(kind="gig", status=Lead.Status.QUALIFIED, whatsapp_sent_at__isnull=True).count(),
+    }
 
 
 @login_required
@@ -178,7 +181,10 @@ def lead_action(request, pk):
     action = request.POST.get("action")
     try:
         if action == "research":
-            research.research_lead(lead)
+            if lead.kind == "gig":
+                gig_service.research_gig(lead)
+            else:
+                research.research_lead(lead)
             flash.success(request, f"Research done: fit {lead.fit_score}/100.")
         elif action == "draft":
             if not lead.email:
@@ -204,7 +210,10 @@ def lead_action(request, pk):
             )
             flash.info(request, "Added to the do-not-contact list.")
         elif action == "whatsapp_write":
-            writer.draft_whatsapp(lead)
+            if lead.kind == "gig":
+                gig_service.research_gig(lead)
+            else:
+                writer.draft_whatsapp(lead)
             flash.success(request, f"New message written for {lead.name}.")
         elif action == "whatsapp_save":
             lead.whatsapp_message = request.POST.get("whatsapp_message", "").replace("\r\n", "\n").strip()[:1500]
@@ -221,6 +230,21 @@ def lead_action(request, pk):
             label = {"whatsapp": "WhatsApp", "call": "phone"}.get(channel, channel.title())
             log(f"You messaged {lead.name} on {label}.", "success", lead=lead)
             flash.success(request, f"Marked {lead.name} as messaged on {label}.")
+        elif action == "gig_email":
+            if not lead.email or Suppression.blocked(lead.email):
+                flash.error(request, "No usable email address in this post.")
+            else:
+                config = AgentConfig.get()
+                address = f"\n{config.postal_address.strip()}" if config.postal_address.strip() else ""
+                Message.objects.create(
+                    lead=lead,
+                    direction=Message.Direction.OUT,
+                    kind=Message.Kind.REPLY,  # they asked to be contacted: sent straight after approval
+                    status=Message.Status.DRAFT,
+                    subject=("Re: " + (lead.post_title or "your post"))[:300],
+                    body=f"{lead.whatsapp_message.strip()}\n\n{config.signature.strip()}{address}",
+                )
+                flash.success(request, "Email added to Approve emails. Approve it there to send.")
         elif action == "socials_save":
             from .contacts import SOCIAL_PATTERNS, social_url
             socials = {}
@@ -238,6 +262,8 @@ def lead_action(request, pk):
         flash.error(request, str(exc))
     if request.POST.get("next") == "call_list":
         return redirect(f"{reverse('call_list')}#lead-{lead.pk}")
+    if request.POST.get("next") == "gigs":
+        return redirect(f"{reverse('gigs')}#lead-{lead.pk}")
     return redirect("lead_detail", pk=lead.pk)
 
 
@@ -266,7 +292,10 @@ def settings_view(request):
     groups = [
         ("You & your offer", ["agent_enabled", "sender_name", "company_name", "company_website", "offer",
                               "ideal_customer", "writing_rules", "signature", "opt_out_line"]),
-        ("Sectors to search", ["target_categories"]),
+        ("Sectors to search", ["target_categories", "foursquare_monthly_limit"]),
+        ("Gig postings", ["gigs_enabled", "gig_subreddits", "hn_gigs_enabled", "remotive_enabled",
+                          "mastodon_enabled", "mastodon_tags", "mastodon_instance", "gig_keywords",
+                          "gig_max_age_days", "gig_check_minutes"]),
         ("Sending & compliance", ["postal_address", "send_hour_start", "send_hour_end", "send_weekdays_only",
                                   "home_timezone"]),
         ("Limits", ["daily_send_limit", "sends_per_tick", "research_per_tick", "drafts_per_tick",
@@ -284,6 +313,12 @@ def activity(request):
 
 @login_required
 def markets(request):
+    if request.method == "POST" and request.POST.get("all") in ("on", "off"):
+        turn_on = request.POST["all"] == "on"
+        Market.objects.update(enabled=turn_on)
+        log(f"{'Enabled' if turn_on else 'Paused'} all markets.", "success" if turn_on else "info")
+        flash.success(request, f"All countries {'enabled' if turn_on else 'paused'}. Check each country's rules note.")
+        return redirect("markets")
     if request.method == "POST":
         market = get_object_or_404(Market, pk=request.POST.get("market"))
         market.enabled = request.POST.get("enabled") == "1"
@@ -299,4 +334,33 @@ def markets(request):
     now = {m.pk: m.local_now() for m in rows}
     config = AgentConfig.get()
     table = [(m, now[m.pk].strftime("%a %H:%M"), config.within_send_window(now[m.pk])) for m in rows]
-    return render(request, "agent/markets.html", {"table": table, "config": config, **_nav_counts()})
+    on_count = sum(1 for m, _, _ in table if m.enabled)
+    return render(request, "agent/markets.html", {"table": table, "config": config, "on_count": on_count, **_nav_counts()})
+
+
+@login_required
+def gigs_view(request):
+    from .services.gigs import find_gigs
+
+    config = AgentConfig.get()
+    if request.method == "POST" and request.POST.get("action") == "check_now":
+        try:
+            found = find_gigs(config, force=True)
+            flash.success(request, f"Checked for gigs: {found} new.")
+        except Exception as exc:  # network problems shouldn't break the page
+            flash.error(request, f"Couldn't check for gigs: {exc}")
+        return redirect("gigs")
+    show_all = request.GET.get("all") == "1"
+    qs = Lead.objects.filter(kind="gig")
+    counts = {
+        "waiting": qs.filter(status=Lead.Status.NEW).count(),
+        "good": qs.filter(status=Lead.Status.QUALIFIED, whatsapp_sent_at__isnull=True).count(),
+        "replied": qs.filter(whatsapp_sent_at__isnull=False).count(),
+        "skipped": qs.filter(status=Lead.Status.DISQUALIFIED).count(),
+    }
+    if not show_all:
+        qs = qs.exclude(status__in=[Lead.Status.DISQUALIFIED, Lead.Status.NEW])
+    leads_qs = sorted(qs, key=lambda l: (l.whatsapp_sent_at is not None, -(l.fit_score or 0)))
+    return render(request, "agent/gigs.html", {
+        "leads": leads_qs, "counts": counts, "show_all": show_all, "config": config, **_nav_counts(),
+    })

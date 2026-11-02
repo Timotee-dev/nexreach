@@ -5,7 +5,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from ..models import AgentConfig, Lead, Message, log
-from . import discovery, inbox, mailer, research, writer
+from . import discovery, gigs, inbox, mailer, research, writer
 from .discovery import OverpassBusy
 from .llm import LLMError
 from .mailer import MailConfigError
@@ -28,6 +28,7 @@ def queue_followups(config):
     due = (
         Lead.objects.filter(
             status=Lead.Status.CONTACTED,
+            kind="business",
             last_contacted_at__lte=cutoff,
             followups_sent__lt=config.max_followups,
         )
@@ -45,7 +46,10 @@ def research_batch(config):
     count = 0
     leads = Lead.objects.filter(status=Lead.Status.NEW).filter(config.focus_filter()).order_by("created_at")
     for lead in leads[: config.research_per_tick]:
-        research.research_lead(lead, config)
+        if lead.kind == "gig":
+            gigs.research_gig(lead, config)
+        else:
+            research.research_lead(lead, config)
         count += 1
     return count
 
@@ -53,7 +57,7 @@ def research_batch(config):
 def draft_batch(config):
     count = 0
     leads = (
-        Lead.objects.filter(status=Lead.Status.QUALIFIED)
+        Lead.objects.filter(status=Lead.Status.QUALIFIED, kind="business")
         .filter(config.focus_filter())
         .exclude(email="")
         .order_by("-fit_score", "created_at")[: config.drafts_per_tick]
@@ -68,7 +72,7 @@ def whatsapp_batch(config):
     """Write a direct message for good-fit businesses with no email but a phone or social account."""
     count = 0
     leads = (
-        Lead.objects.filter(status=Lead.Status.NO_EMAIL, whatsapp_message="", whatsapp_sent_at__isnull=True)
+        Lead.objects.filter(status=Lead.Status.NO_EMAIL, kind="business", whatsapp_message="", whatsapp_sent_at__isnull=True)
         .filter(Q(phone__gt="") | ~Q(socials={}))
         .filter(config.focus_filter())
         .order_by("-fit_score", "created_at")[: config.drafts_per_tick]
@@ -80,7 +84,7 @@ def whatsapp_batch(config):
 
 
 def maybe_discover(config):
-    if Lead.objects.filter(status=Lead.Status.NEW).filter(config.focus_filter()).count() >= config.min_new_leads:
+    if Lead.objects.filter(status=Lead.Status.NEW, kind="business").filter(config.focus_filter()).count() >= config.min_new_leads:
         return 0
     return discovery.discover_next(config)
 
@@ -97,6 +101,7 @@ def tick() -> dict:
         "drafted": _step("Drafting emails", lambda: draft_batch(config)),
         "messages": _step("Writing direct messages", lambda: whatsapp_batch(config)),
         "discovered": _step("Finding businesses", lambda: maybe_discover(config)),
+        "gigs": _step("Finding gigs", lambda: gigs.find_gigs(config)),
     }
     summary = ", ".join(f"{k} {v}" for k, v in results.items() if v)
     log(f"Agent check-in done — {summary or 'nothing needed doing'}.")

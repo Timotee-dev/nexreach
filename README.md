@@ -168,6 +168,32 @@ US and UK are on by default. Each other country's card shows its cold-email rule
 before switching it on. This isn't legal advice. Mainland EU countries such as Germany are
 deliberately left out because their rules are much stricter.
 
+## More lead sources
+
+**Foursquare (businesses).** A second business directory alongside OpenStreetMap, with
+better phone, website, email and social data. The first 500 searches a month are free.
+Create a free account at foursquare.com/developers, make a project, generate a Service API
+key and add it to `.env` as `FOURSQUARE_API_KEY=...`. NexReach stops at the monthly limit
+in Settings (450 by default) and keeps using OpenStreetMap.
+
+**Countries.** 27 countries are set up; 8 are on by default (US, UK, Canada, Australia,
+Ireland, New Zealand, UAE, Singapore). Turn others on from the Markets page ("Enable all"
+turns everything on). Each country writes in its own language (German for Germany, and so
+on) and shows its cold-email rules; many EU countries need consent for cold email, so lean
+on direct messages and gigs there.
+
+**Gigs (people asking for a developer).** The **Gigs** page collects `[Hiring]` posts from
+the subreddits in Settings (r/forhire and r/freelance_forhire by default) and "SEEKING
+FREELANCER" comments in Hacker News' monthly thread. Only posts that mention your keywords
+are kept. Claude scores each one and writes a reply. You send it yourself: **Reddit
+message** opens Reddit with the reply filled in, **Reply on Hacker News** copies it and
+opens the reply box, and **Email them** (when the post lists an email) puts it in Approve
+emails. Gigs are checked every 60 minutes, or run `python manage.py find_gigs`.
+Also included: contract and freelance software listings from Remotive (checked 4 times a
+day, always linking back to Remotive) and Mastodon posts on hiring hashtags that clearly ask
+for a developer. Subreddits checked by default: forhire, freelance_forhire, hiring, jobbit
+and WebDeveloperJobs.
+
 ## Switching to your own domain later
 
 Buy the domain, set up the mailbox (Zoho or Google Workspace), then change

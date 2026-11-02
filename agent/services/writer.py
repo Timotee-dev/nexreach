@@ -4,6 +4,7 @@ from ..models import AgentConfig, Lead, Message, log
 from . import llm
 
 COMMON_RULES = """Rules:
+- Write in {language}.
 - Plain text, no markdown, no emojis, no placeholders like [Name].
 - Under {words} words in the body. Short paragraphs.
 - Only use facts given here. Never invent clients, numbers, results or testimonials.
@@ -68,8 +69,14 @@ JSON fields: "body".
 """
 
 
-def _rules(config, words=120):
-    return COMMON_RULES.format(words=words, extra_rules=config.writing_rules or "Be friendly and direct.")
+def _language(lead) -> str:
+    return (lead.market.language if lead and lead.market_id else "") or "English"
+
+
+def _rules(config, words=120, lead=None):
+    return COMMON_RULES.format(
+        words=words, language=_language(lead), extra_rules=config.writing_rules or "Be friendly and direct."
+    )
 
 
 def _history(lead: Lead, limit: int = 6) -> str:
@@ -110,7 +117,7 @@ def draft_initial(lead: Lead, config: AgentConfig | None = None) -> Message:
             summary=lead.research_summary or "n/a",
             hook=lead.hook or "none",
             signals="; ".join(lead.site_signals or []) or "none",
-            rules=_rules(config),
+            rules=_rules(config, lead=lead),
         )
     )
     msg = Message.objects.create(
@@ -143,7 +150,7 @@ def draft_followup(lead: Lead, config: AgentConfig | None = None) -> Message:
             offer=config.offer,
             history=_history(lead),
             final_note="This is the last follow-up: politely say you won't email again." if final else "",
-            rules=_rules(config, words=80),
+            rules=_rules(config, words=80, lead=lead),
         )
     )
     msg = Message.objects.create(
@@ -172,7 +179,7 @@ def draft_reply(lead: Lead, classification: str, config: AgentConfig | None = No
             country=lead.market.name if lead.market_id else "",
             history=_history(lead),
             classification=classification,
-            rules=_rules(config, words=150),
+            rules=_rules(config, words=150, lead=lead),
         )
     )
     msg = Message.objects.create(
@@ -219,7 +226,7 @@ This is a first message, so it must feel personal and brief:
 - Open with the specific observation, link it to one concrete benefit, end with a short,
   low-pressure question (e.g. whether you can send a quick idea or mockup).
 - Include the portfolio link only if it fits naturally. Never mention prices.
-- Write in the language and spelling normally used for business in {country}.
+- Write in {language}, with the spelling normally used for business in {country}.
 - {extra_rules}
 
 JSON fields: "message".
@@ -241,6 +248,7 @@ def draft_whatsapp(lead: Lead, config: AgentConfig | None = None) -> str:
             hook=lead.hook or "none",
             signals="; ".join(lead.site_signals or []) or "none",
             extra_rules=config.writing_rules or "Be friendly and direct.",
+            language=_language(lead),
             channels=" or ".join(
                 (["WhatsApp"] if lead.whatsapp_number else []) + [label for _, label, _, _ in lead.dm_channels]
             ) or "WhatsApp",

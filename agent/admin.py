@@ -12,7 +12,7 @@ class MessageInline(admin.TabularInline):
 
 @admin.register(Market)
 class MarketAdmin(admin.ModelAdmin):
-    list_display = ("name", "enabled", "currency", "calling_code", "timezone")
+    list_display = ("name", "enabled", "language", "currency", "calling_code", "timezone")
     list_editable = ("enabled",)
 
 

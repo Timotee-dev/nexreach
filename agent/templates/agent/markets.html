@@ -2,8 +2,14 @@
 {% block title %}Markets{% endblock %}
 {% block content %}
 <div class="head">
-  <div><h1>Markets</h1><div class="sub">Countries the agent searches and emails. Each one uses its own time zone and phone format; cold emails go out {{ config.send_window_label }}.</div></div>
-  <a class="btn" href="/admin/agent/market/add/">+ Add a country</a>
+  <div><h1>Markets</h1><div class="sub">{{ on_count }} of {{ table|length }} countries on. Countries the agent searches and emails. Each one uses its own time zone and phone format; cold emails go out {{ config.send_window_label }}.</div></div>
+  <div class="row">
+    <form method="post" class="row">{% csrf_token %}
+      <button class="btn" name="all" value="on">Enable all</button>
+      <button class="btn ghost" name="all" value="off">Pause all</button>
+    </form>
+    <a class="btn" href="/admin/agent/market/add/">+ Add a country</a>
+  </div>
 </div>
 {% if not config.postal_address %}<div class="flash error">Add your postal address in <a href="{% url 'settings' %}">Settings</a> — most countries require it in cold emails, and those emails stay on hold until it's set.</div>{% endif %}
 <div class="grid" style="gap:12px">
@@ -12,7 +18,7 @@
     <div class="spread">
       <div>
         <h2>{{ m.name }} {% if m.enabled %}<span class="pill interested">On</span>{% else %}<span class="pill">Off</span>{% endif %}</h2>
-        <div class="muted small" style="margin-top:4px">{{ m.city_list|length }} cities · {{ m.currency }} · +{{ m.calling_code }} · {{ local }} there ({% if open %}<span style="color:var(--good)">sending hours</span>{% else %}outside sending hours{% endif %})</div>
+        <div class="muted small" style="margin-top:4px">{{ m.city_list|length }} cities · {{ m.currency }} · +{{ m.calling_code }} · writes in {{ m.language }} · {{ local }} there ({% if open %}<span style="color:var(--good)">sending hours</span>{% else %}outside sending hours{% endif %})</div>
       </div>
       <form method="post" class="row">{% csrf_token %}
         <input type="hidden" name="market" value="{{ m.pk }}">

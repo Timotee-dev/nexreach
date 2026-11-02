@@ -312,7 +312,7 @@ class ViewTests(TestCase):
         r = self.client.post(reverse("lead_add"), {"name": "Foreign Co", "website": "https://foreign.co", "email": "x@foreign.co"})
         self.assertEqual(r.status_code, 302)
         self.assertTrue(Lead.objects.filter(name="Foreign Co", status="new").exists())
-        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor")}
+        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at")}
         data["daily_send_limit"] = 12
         data["agent_enabled"] = "on"
         self.assertEqual(self.client.post(reverse("settings"), data).status_code, 302)
@@ -360,9 +360,13 @@ class GlobalMarketTests(TestCase):
 
     def test_markets_seeded(self):
         from .models import Market
-        self.assertEqual(Market.objects.count(), 8)
+        self.assertEqual(Market.objects.count(), 27)
         self.assertTrue(self.us.enabled and self.uk.enabled)
         self.assertFalse(self.ng.enabled)
+        self.assertTrue(Market.objects.get(name="Canada").enabled)
+        self.assertFalse(Market.objects.get(name="Germany").enabled)
+        self.assertEqual(Market.objects.get(name="Germany").language, "German")
+        self.assertIn("San Francisco, United States", Market.objects.get(name="United States").city_list)
         self.assertIn("London, United Kingdom", self.uk.city_list)
 
     def test_phones_by_country(self):
@@ -481,7 +485,7 @@ class GlobalMarketTests(TestCase):
         r = self.client.get(reverse("settings"))
         self.assertContains(r, "Sending &amp; compliance")
         self.assertContains(r, "Sectors to search")
-        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor")}
+        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at")}
         for key in [k for k, v in data.items() if isinstance(v, bool)]:
             data[key] = "on" if data[key] else ""
         data["home_timezone"] = "Mars/Olympus"
@@ -687,3 +691,232 @@ class DirectMessageTests(TestCase):
         call_command("refresh_contacts", stdout=mock.Mock())
         lead.refresh_from_db()
         self.assertEqual(lead.socials, {"facebook": "https://www.facebook.com/oldfirm"})
+
+
+class FoursquareTests(TestCase):
+    PLACE = {"fsq_place_id": "abc123", "name": "Smile Dental", "location": {"formatted_address": "1 Main St, Houston"},
+             "tel": "(713) 555-0142", "website": "smiledental.com", "email": "hi@smiledental.com",
+             "social_media": {"instagram": "smile.dental", "facebook_id": "123456789"}}
+
+    def setUp(self):
+        from .models import Market
+        self.us = Market.objects.get(name="United States")
+
+    def test_to_lead(self):
+        from .services import foursquare
+        data = foursquare.to_lead(self.PLACE, "Houston, United States", "amenity=dentist")
+        self.assertEqual(data["website"], "http://smiledental.com")
+        self.assertEqual(data["email"], "hi@smiledental.com")
+        self.assertEqual(data["socials"]["instagram"], "https://www.instagram.com/smile.dental/")
+        self.assertEqual(data["socials"]["facebook"], "https://www.facebook.com/123456789")
+        self.assertEqual(data["category"], "dentist")
+
+    @override_settings(FOURSQUARE_API_KEY="k")
+    @mock.patch("agent.services.foursquare.requests.get")
+    def test_discover_counts_usage_dedupes_and_respects_limit(self, get):
+        from .models import ApiUsage
+        from .services import foursquare
+        get.return_value = mock.Mock(status_code=200, **{"json.return_value": {"results": [self.PLACE]}})
+        Lead.objects.create(name="SMILE DENTAL", city="Dallas, United States")  # other city: not a duplicate
+        self.assertEqual(foursquare.discover("Houston, United States", "amenity=dentist", self.us), 1)
+        self.assertEqual(foursquare.discover("Houston, United States", "amenity=dentist", self.us), 0)
+        self.assertEqual(ApiUsage.used("foursquare"), 2)
+        headers = get.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer k")
+        self.assertIn("X-Places-Api-Version", headers)
+        config = AgentConfig.get()
+        config.foursquare_monthly_limit = 2
+        self.assertFalse(foursquare.available(config))
+
+    @override_settings(FOURSQUARE_API_KEY="k")
+    @mock.patch("agent.services.discovery.discover", return_value=3)
+    @mock.patch("agent.services.foursquare.discover", side_effect=__import__("agent.services.foursquare", fromlist=["x"]).FoursquareError("bad key"))
+    def test_rotation_uses_both_and_survives_foursquare_errors(self, fsq, osm):
+        config = AgentConfig.get()
+        self.assertEqual(discovery.discover_next(config), 3)
+        self.assertTrue(fsq.called and osm.called)
+        self.assertTrue(Activity.objects.filter(text__contains="bad key").exists())
+
+    @mock.patch("agent.services.discovery.discover", return_value=1)
+    @mock.patch("agent.services.foursquare.discover")
+    def test_no_key_skips_foursquare(self, fsq, osm):
+        discovery.discover_next(AgentConfig.get())
+        fsq.assert_not_called()
+
+
+REDDIT_JSON = {"data": {"children": [
+    {"data": {"id": "a1", "title": "[Hiring] Need a Django developer to build a booking site", "selftext": "Budget $1500. Email me at owner@shop.com",
+              "author": "shopowner", "created_utc": 0, "permalink": "/r/forhire/comments/a1/x/", "over_18": False}},
+    {"data": {"id": "a2", "title": "[For Hire] I build websites", "selftext": "", "author": "dev", "created_utc": 0,
+              "permalink": "/r/forhire/comments/a2/x/", "over_18": False}},
+    {"data": {"id": "a3", "title": "[Hiring] Logo designer", "selftext": "Need a logo", "author": "x", "created_utc": 0,
+              "permalink": "/r/forhire/comments/a3/x/", "over_18": False}},
+]}}
+
+
+class GigTests(TestCase):
+    def setUp(self):
+        import time
+        for child in REDDIT_JSON["data"]["children"]:
+            child["data"]["created_utc"] = time.time() - 3600
+
+    @mock.patch("agent.services.gigs.requests.get")
+    def test_reddit_filters_hiring_and_keywords(self, get):
+        from .services import gigs
+        config = AgentConfig.get()
+        config.remotive_enabled = config.mastodon_enabled = False
+        config.hn_gigs_enabled = False
+        config.gig_subreddits = "forhire"
+        get.return_value = mock.Mock(status_code=200, **{"json.return_value": REDDIT_JSON})
+        self.assertEqual(gigs.find_gigs(config, force=True), 1)
+        gig = Lead.objects.get(kind="gig")
+        self.assertEqual((gig.source_id, gig.post_author, gig.email), ("reddit:a1", "shopowner", "owner@shop.com"))
+        self.assertEqual(gig.post_url, "https://www.reddit.com/r/forhire/comments/a1/x/")
+        self.assertEqual(gigs.find_gigs(config), 0)  # not due again yet
+        self.assertEqual(gigs.find_gigs(config, force=True), 0)  # no duplicates
+
+    @mock.patch("agent.services.gigs.requests.get")
+    def test_hn_seeking_freelancer(self, get):
+        from .services import gigs
+        now = timezone.now().isoformat()
+        responses = {
+            gigs.HN_SEARCH: {"hits": [{"objectID": "999", "title": "Ask HN: Freelancer? Seeking freelancer? (November 2026)"}]},
+            gigs.HN_ITEM.format(id="999"): {"children": [
+                {"id": 1, "author": "acme", "created_at": now, "text": "SEEKING FREELANCER | Remote | <p>Need a React dashboard. contact@acme.io"},
+                {"id": 2, "author": "me", "created_at": now, "text": "SEEKING WORK | Remote | Python developer"},
+            ]},
+        }
+        get.side_effect = lambda url, **kw: mock.Mock(status_code=200, raise_for_status=lambda: None,
+                                                    **{"json.return_value": responses[url]})
+        config = AgentConfig.get()
+        config.remotive_enabled = config.mastodon_enabled = False
+        config.gig_subreddits = ""
+        self.assertEqual(gigs.find_gigs(config, force=True), 1)
+        gig = Lead.objects.get(kind="gig")
+        self.assertEqual((gig.source, gig.email), ("hn", "contact@acme.io"))
+
+    @mock.patch("agent.services.gigs.requests.get", return_value=mock.Mock(status_code=403))
+    def test_reddit_blocked_is_logged_not_fatal(self, _):
+        from .services import gigs
+        config = AgentConfig.get()
+        config.remotive_enabled = config.mastodon_enabled = False
+        config.hn_gigs_enabled = False
+        self.assertEqual(gigs.find_gigs(config, force=True), 0)
+        self.assertTrue(Activity.objects.filter(text__contains="HTTP 403").exists())
+
+    @fake_claude()
+    def test_gig_research_and_isolation_from_cold_email(self, _):
+        with mock.patch("agent.services.llm.ask_json", return_value={
+            "fit_score": 88, "fit_reason": "Web build", "summary": "A booking site", "budget": "$1500", "reply": "Hi! Happy to help."
+        }):
+            gig = Lead.objects.create(kind="gig", source="reddit", name="g", post_title="[Hiring] booking site",
+                                      post_text="Budget $1500", email="owner@shop.com", post_author="shopowner")
+            loop.research_batch(AgentConfig.get())
+        gig.refresh_from_db()
+        self.assertEqual((gig.status, gig.budget, gig.whatsapp_message), (Lead.Status.QUALIFIED, "$1500", "Hi! Happy to help."))
+        self.assertEqual(loop.draft_batch(AgentConfig.get()), 0)  # no cold email for gigs
+        self.assertEqual(loop.whatsapp_batch(AgentConfig.get()), 0)
+
+    def test_gigs_page_and_email_action(self):
+        user = User.objects.create_superuser("t", "t@t.com", "pw")
+        self.client.force_login(user)
+        config = AgentConfig.get()
+        config.postal_address = "12 Example Street, Akure"
+        config.save()
+        gig = Lead.objects.create(kind="gig", source="reddit", name="g", post_title="[Hiring] booking site", status="qualified",
+                                  fit_score=88, post_author="shopowner", email="owner@shop.com", whatsapp_message="Hi there",
+                                  post_url="https://www.reddit.com/r/forhire/comments/a1/x/", budget="$1500")
+        Lead.objects.create(kind="gig", source="hn", name="poor", post_title="Logo", status="disqualified", fit_score=10)
+        page = self.client.get(reverse("gigs"))
+        self.assertContains(page, "Reddit message")
+        self.assertContains(page, 'data-author="shopowner"')
+        self.assertContains(page, "budget: $1500")
+        self.assertNotContains(page, ">Logo<")
+        self.assertContains(self.client.get(reverse("gigs") + "?all=1"), "Logo")
+        self.assertContains(self.client.get(reverse("dashboard")), 'href="/gigs/"')
+        self.client.post(reverse("lead_action", args=[gig.pk]), {"action": "gig_email", "next": "gigs"})
+        msg = Message.objects.get(lead=gig)
+        self.assertEqual((msg.kind, msg.status, msg.subject), ("reply", "draft", "Re: [Hiring] booking site"))
+        self.assertIn("12 Example Street", msg.body)
+        self.client.post(reverse("lead_action", args=[gig.pk]), {"action": "whatsapp_sent", "channel": "reddit", "next": "gigs"})
+        gig.refresh_from_db()
+        self.assertEqual(gig.dm_channel, "reddit")
+        self.assertContains(self.client.get(reverse("settings")), "Gig postings")
+
+
+
+class MoreSourceTests(TestCase):
+    def setUp(self):
+        self.config = AgentConfig.get()
+        self.config.gig_subreddits = ""
+        self.config.hn_gigs_enabled = False
+
+    @mock.patch("agent.services.gigs.requests.get")
+    def test_remotive_contract_only_four_times_a_day(self, get):
+        from .services import gigs
+        today = timezone.now().strftime("%Y-%m-%dT%H:%M:%S")
+        get.return_value = mock.Mock(status_code=200, **{"json.return_value": {"jobs": [
+            {"id": 1, "url": "https://remotive.com/remote-jobs/software-dev/django-dev-1", "title": "Django developer",
+             "company_name": "Acme", "job_type": "contract", "publication_date": today,
+             "candidate_required_location": "Worldwide", "salary": "$60/hr", "description": "<p>Build our Django API</p>"},
+            {"id": 2, "url": "https://remotive.com/x/2", "title": "Senior Django engineer", "company_name": "Big",
+             "job_type": "full_time", "publication_date": today, "description": "Django"},
+        ]}})
+        self.config.mastodon_enabled = False
+        self.assertEqual(gigs.find_gigs(self.config, force=True), 1)
+        gig = Lead.objects.get(kind="gig")
+        self.assertEqual((gig.source, gig.post_author), ("remotive", "Acme"))
+        self.assertIn("$60/hr", gig.post_text)
+        self.assertEqual(gigs.remotive_gigs(self.config), 0)  # not again within 6 hours
+        self.assertEqual(get.call_count, 1)
+
+    @mock.patch("agent.services.gigs.requests.get")
+    def test_mastodon_needs_clear_request(self, get):
+        from .services import gigs
+        now = timezone.now().isoformat()
+        posts = [
+            {"id": "1", "uri": "u1", "url": "https://mastodon.social/@bakery/1", "created_at": now,
+             "account": {"acct": "bakery@example.org"}, "content": "<p>We're looking for a web developer to rebuild our bakery website #hiring</p>"},
+            {"id": "2", "uri": "u2", "url": "https://mastodon.social/@dev/2", "created_at": now,
+             "account": {"acct": "dev"}, "content": "<p>I'm a freelance developer, available for projects! Need a website? #hiring</p>"},
+            {"id": "3", "uri": "u3", "url": "https://mastodon.social/@co/3", "created_at": now,
+             "account": {"acct": "co"}, "content": "<p>We're hiring a barista #hiring</p>"},
+        ]
+        get.return_value = mock.Mock(status_code=200, **{"json.return_value": posts})
+        self.config.remotive_enabled = False
+        self.config.mastodon_tags = "hiring"
+        self.assertEqual(gigs.find_gigs(self.config, force=True), 1)
+        gig = Lead.objects.get(kind="gig")
+        self.assertEqual((gig.source, gig.post_author), ("mastodon", "@bakery@example.org"))
+
+    @mock.patch("agent.services.gigs.requests.get", return_value=mock.Mock(status_code=503))
+    def test_sources_down_are_logged(self, _):
+        from .services import gigs
+        self.config.mastodon_tags = "hiring"
+        self.assertEqual(gigs.find_gigs(self.config, force=True), 0)
+        self.assertTrue(Activity.objects.filter(text__contains="Remotive unavailable").exists())
+        self.assertTrue(Activity.objects.filter(text__contains="Mastodon #hiring unavailable").exists())
+
+    @mock.patch("agent.services.writer.llm.ask_json", return_value={"subject": "s", "body": "b"})
+    def test_writes_in_country_language(self, ask):
+        from .models import Market
+        de = Market.objects.get(name="Germany")
+        lead = Lead.objects.create(name="Kanzlei", email="a@k.de", market=de)
+        writer.draft_initial(lead)
+        self.assertIn("Write in German.", ask.call_args[0][0])
+        lead2 = Lead.objects.create(name="Firm", email="a@f.com", market=Market.objects.get(name="United States"))
+        writer.draft_initial(lead2)
+        self.assertIn("Write in English.", ask.call_args[0][0])
+
+    def test_enable_all_and_sectors(self):
+        from .models import Market
+        user = User.objects.create_superuser("t", "t@t.com", "pw")
+        self.client.force_login(user)
+        self.client.post(reverse("markets"), {"all": "on"})
+        self.assertFalse(Market.objects.filter(enabled=False).exists())
+        self.assertContains(self.client.get(reverse("markets")), "27 of 27 countries on")
+        self.client.post(reverse("markets"), {"all": "off"})
+        self.assertFalse(Market.objects.filter(enabled=True).exists())
+        self.assertIn("healthcare=physiotherapist", AgentConfig.get().categories)
+        self.assertIn("jobbit", AgentConfig.get().subreddits)
+        self.assertContains(self.client.get(reverse("settings")), "Mastodon")
