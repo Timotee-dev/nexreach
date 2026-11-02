@@ -105,12 +105,19 @@ def fetch_reddit(sub: str) -> list[dict]:
 def reddit_gigs(config: AgentConfig) -> int:
     cutoff = timezone.now() - datetime.timedelta(days=config.gig_max_age_days)
     created = 0
+    pauses = dict(config.gig_source_pauses or {})
     for sub in config.subreddits:
+        key = f"reddit:{sub.lower()}"
+        until = pauses.get(key)
+        if until and timezone.now().isoformat() < until:
+            continue
         try:
             posts = fetch_reddit(sub)
         except requests.RequestException as exc:
-            log(f"Gigs: {exc}", "warning")
+            pauses[key] = (timezone.now() + datetime.timedelta(hours=24)).isoformat()
+            log(f"Gigs: {exc}. Skipping r/{sub} for 24 hours.", "warning")
             continue
+        pauses.pop(key, None)
         for post in posts:
             posted = datetime.datetime.fromtimestamp(post.get("created_utc", 0), tz=datetime.timezone.utc)
             title, body = post.get("title", ""), post.get("selftext", "")
@@ -123,6 +130,9 @@ def reddit_gigs(config: AgentConfig) -> int:
             url = "https://www.reddit.com" + post.get("permalink", "")
             if _save_gig("reddit", f"reddit:{post.get('id')}", title, body, post.get("author", ""), url, posted):
                 created += 1
+    if pauses != (config.gig_source_pauses or {}):
+        config.gig_source_pauses = pauses
+        config.save(update_fields=["gig_source_pauses"])
     return created
 
 

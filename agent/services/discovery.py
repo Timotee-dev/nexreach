@@ -181,6 +181,32 @@ def search_plan(config: AgentConfig) -> list[tuple[Market, str, str]]:
     return plan
 
 
+POOR_SECTOR_MIN_SCANNED = 30
+POOR_SECTOR_RATE = 0.08
+
+
+def sector_email_rates() -> dict:
+    """Share of scanned businesses with an email, per sector (category word)."""
+    from django.db.models import Count, Q
+
+    rows = (
+        Lead.objects.filter(kind="business", contacts_checked_at__isnull=False)
+        .values("category")
+        .annotate(scanned=Count("id"), with_email=Count("id", filter=~Q(email="")))
+    )
+    return {r["category"]: (r["scanned"], r["with_email"] / r["scanned"]) for r in rows if r["scanned"]}
+
+
+def is_poor_sector(tag: str, rates: dict) -> bool:
+    from . import foursquare
+
+    for category in {tag.split("=", 1)[-1].replace("_", " "), foursquare.search_words(tag)}:
+        scanned, rate = rates.get(category, (0, 1.0))
+        if scanned >= POOR_SECTOR_MIN_SCANNED and rate < POOR_SECTOR_RATE:
+            return True
+    return False
+
+
 def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     """Search the next country/city/sector in rotation, on Foursquare (when set up and within the
     monthly free allowance) and on OpenStreetMap."""
@@ -191,7 +217,12 @@ def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     if not plan:
         log("Enable at least one market (Markets page) and add sectors in Settings so the agent can find businesses.", "warning")
         return 0
-    market, city, tag = plan[config.discovery_cursor % len(plan)]
+    rates = sector_email_rates() if config.skip_poor_sectors else {}
+    for _ in range(len(plan)):
+        market, city, tag = plan[config.discovery_cursor % len(plan)]
+        if not rates or not is_poor_sector(tag, rates):
+            break
+        config.discovery_cursor = (config.discovery_cursor + 1) % len(plan)  # sector rarely shows emails: skip
     found = 0
     if foursquare.available(config):
         try:

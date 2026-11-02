@@ -381,6 +381,11 @@ def research_lead(lead: Lead, config: AgentConfig | None = None) -> Lead:
     return lead
 
 
+def scan_many(leads: list[Lead], timeout: int = 12) -> list[dict]:
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(lambda l: gather(l, l.calling_code, timeout=timeout), leads))
+
+
 def scan_contacts(config: AgentConfig | None = None) -> int:
     """Free step (no Claude): visit new businesses' websites in parallel to find emails, phones and
     socials. Leads with no way to contact them are set aside so Claude isn't spent on them.
@@ -394,8 +399,7 @@ def scan_contacts(config: AgentConfig | None = None) -> int:
     )
     if not leads:
         return 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda l: gather(l, l.calling_code, timeout=12), leads))
+    results = scan_many(leads)
     found = 0
     for lead, facts in zip(leads, results):
         changed = apply_contacts(lead, facts)
@@ -423,6 +427,7 @@ def research_queue(config: AgentConfig):
         Lead.objects.filter(status=Lead.Status.NEW)
         .filter(config.focus_filter())
         .filter(Q(kind="gig") | Q(contacts_checked_at__isnull=False))
+        .filter(Q(kind="gig") | ~Q(email="") | Q(pk__in=[] if not config.research_dm_leads else Lead.objects.values("pk")))
         .annotate(has_email=Case(When(email="", then=Value(1)), default=Value(0), output_field=IntegerField()))
         .order_by("has_email", "created_at")
     )

@@ -69,6 +69,8 @@ def draft_batch(config):
 
 def whatsapp_batch(config):
     """Write a direct message for good-fit businesses with no email but a phone or social account."""
+    if not config.research_dm_leads:
+        return 0
     count = 0
     leads = (
         Lead.objects.filter(status=Lead.Status.NO_EMAIL, kind="business", whatsapp_message="", whatsapp_sent_at__isnull=True)
@@ -83,15 +85,18 @@ def whatsapp_batch(config):
 
 
 def maybe_discover(config):
-    """Search for more businesses while today's email target isn't met and the scan queue is running low."""
+    """Keep searching while today's email target isn't met; several searches per check-in when behind."""
     waiting = Lead.objects.filter(status=Lead.Status.NEW, kind="business").filter(config.focus_filter())
-    unscanned = waiting.filter(contacts_checked_at__isnull=True).count()
     behind = research.emails_found_today() < config.daily_email_target
-    if unscanned >= config.scan_per_tick:
-        return 0  # plenty already queued for the next scan
     if not behind and waiting.count() >= config.min_new_leads:
         return 0
-    return discovery.discover_next(config)
+    found = 0
+    rounds = max(1, config.searches_when_behind) if behind else 1
+    for _ in range(rounds):
+        if waiting.filter(contacts_checked_at__isnull=True).count() >= config.scan_per_tick * 2:
+            break  # enough queued for the next scans
+        found += discovery.discover_next(config)
+    return found
 
 
 def tick() -> dict:

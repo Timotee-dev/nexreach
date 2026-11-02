@@ -148,6 +148,16 @@ class AgentConfig(models.Model):
     scan_per_tick = models.PositiveIntegerField(
         default=25, help_text="Websites to scan for contact details per check-in (free, no Claude)."
     )
+    research_dm_leads = models.BooleanField(
+        default=False,
+        help_text="Also spend Claude on businesses with no email (for direct messages). Off = emails first.",
+    )
+    searches_when_behind = models.PositiveIntegerField(
+        default=3, help_text="Map searches per check-in while today's email target isn't met."
+    )
+    skip_poor_sectors = models.BooleanField(
+        default=True, help_text="Skip sectors where scanned websites rarely show an email."
+    )
     only_contactable = models.BooleanField(
         default=True, help_text="When searching maps, only collect businesses that list a website or email."
     )
@@ -181,6 +191,7 @@ class AgentConfig(models.Model):
     )
     mastodon_instance = models.CharField(max_length=100, default="mastodon.social")
     remotive_checked_at = models.DateTimeField(null=True, blank=True)
+    gig_source_pauses = models.JSONField(default=dict, blank=True)  # {"reddit:jobbit": "2026-11-03T..."}
     gig_max_age_days = models.PositiveIntegerField(default=7, help_text="Ignore posts older than this.")
     gig_check_minutes = models.PositiveIntegerField(default=60, help_text="How often to look for new gigs.")
     gigs_checked_at = models.DateTimeField(null=True, blank=True)

@@ -262,7 +262,7 @@ class LoopTests(TestCase):
         results = loop.tick()
         self.assertEqual(results["researched"], 1)
         self.assertEqual(results["drafted"], 1)
-        self.assertEqual(results["discovered"], 3)
+        self.assertEqual(results["discovered"], 9)  # behind the daily email target: 3 searches
         self.assertTrue(Message.objects.filter(status="draft").exists())
         self.assertFalse(Message.objects.filter(status="sent").exists())  # nothing sent without approval
 
@@ -312,7 +312,7 @@ class ViewTests(TestCase):
         r = self.client.post(reverse("lead_add"), {"name": "Foreign Co", "website": "https://foreign.co", "email": "x@foreign.co"})
         self.assertEqual(r.status_code, 302)
         self.assertTrue(Lead.objects.filter(name="Foreign Co", status="new").exists())
-        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at")}
+        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at", "gig_source_pauses")}
         data["daily_send_limit"] = 12
         data["agent_enabled"] = "on"
         self.assertEqual(self.client.post(reverse("settings"), data).status_code, 302)
@@ -485,7 +485,7 @@ class GlobalMarketTests(TestCase):
         r = self.client.get(reverse("settings"))
         self.assertContains(r, "Sending &amp; compliance")
         self.assertContains(r, "Sectors to search")
-        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at")}
+        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at", "gig_source_pauses")}
         for key in [k for k, v in data.items() if isinstance(v, bool)]:
             data[key] = "on" if data[key] else ""
         data["home_timezone"] = "Mars/Olympus"
@@ -545,6 +545,7 @@ class WhatsAppTests(TestCase):
     @mock.patch("agent.services.writer.llm.ask_json", return_value={"message": "Hello"})
     def test_loop_writes_once_and_skips_sent(self, _):
         config = AgentConfig.get()
+        config.research_dm_leads = True
         sent = Lead.objects.create(name="Already messaged", phone="+441130000001", market=self.uk,
                                    status=Lead.Status.NO_EMAIL, whatsapp_sent_at=timezone.now())
         no_phone = Lead.objects.create(name="No phone", market=self.uk, status=Lead.Status.NO_EMAIL)
@@ -651,7 +652,10 @@ class DirectMessageTests(TestCase):
         lead = Lead.objects.create(name="IG only", market=self.us, status=Lead.Status.NO_EMAIL,
                                    socials={"instagram": "https://www.instagram.com/igonly/"})
         Lead.objects.create(name="Nothing", market=self.us, status=Lead.Status.NO_EMAIL)
-        self.assertEqual(loop.whatsapp_batch(AgentConfig.get()), 1)
+        config = AgentConfig.get()
+        self.assertEqual(loop.whatsapp_batch(config), 0)  # emails first: no Claude spent on DMs by default
+        config.research_dm_leads = True
+        self.assertEqual(loop.whatsapp_batch(config), 1)
         self.assertIn("sent on Instagram", ask.call_args[0][0])
         lead.refresh_from_db()
         self.assertEqual(lead.whatsapp_message, "Hi")
@@ -987,8 +991,10 @@ class EmailFinderTests(TestCase):
         self.assertEqual(c.status, Lead.Status.DISQUALIFIED)
         self.assertEqual(research.emails_found_today(), 1)
         # Emailable leads are researched first, and research reuses the scan (no second website visit).
-        queue = [l.name for l in research.research_queue(AgentConfig.get())]
-        self.assertEqual(queue, ["A", "B"])
+        config = AgentConfig.get()
+        self.assertEqual([l.name for l in research.research_queue(config)], ["A"])  # emails only by default
+        config.research_dm_leads = True
+        self.assertEqual([l.name for l in research.research_queue(config)], ["A", "B"])
         with mock.patch("agent.services.research.gather") as gather, \
              mock.patch("agent.services.research.llm.ask_json", return_value={"fit_score": 80, "summary": "s", "hook": "h", "fit_reason": "r"}):
             research.research_lead(a)
@@ -999,15 +1005,15 @@ class EmailFinderTests(TestCase):
     @mock.patch("agent.services.loop.discovery.discover_next", return_value=50)
     def test_discovery_keeps_going_until_daily_target(self, discover_next):
         config = AgentConfig.get()
-        config.daily_email_target, config.scan_per_tick, config.min_new_leads = 2, 3, 1
+        config.daily_email_target, config.scan_per_tick, config.min_new_leads, config.searches_when_behind = 2, 3, 1, 3
         Lead.objects.create(name="waiting", market=self.us, email="w@w.com", contacts_checked_at=timezone.now())
-        self.assertEqual(loop.maybe_discover(config), 50)                       # behind target -> search
+        self.assertEqual(loop.maybe_discover(config), 150)                      # behind target: 3 searches
         for i in range(2):
             Lead.objects.create(name=f"f{i}", market=self.us, email=f"f{i}@f.com", email_found_at=timezone.now(),
                                 status="qualified")
         self.assertEqual(loop.maybe_discover(config), 0)                        # target met, queue not empty
-        for i in range(3):
-            Lead.objects.create(name=f"u{i}", market=self.us)                   # unscanned queue full
+        for i in range(6):
+            Lead.objects.create(name=f"u{i}", market=self.us)                   # unscanned queue full (2 x scan size)
         config.daily_email_target = 99
         self.assertEqual(loop.maybe_discover(config), 0)
 
@@ -1019,3 +1025,64 @@ class EmailFinderTests(TestCase):
         self.assertContains(page, "New emails found today")
         self.assertContains(page, "1<span")
         self.assertContains(self.client.get(reverse("settings")), "Daily email target")
+
+
+
+class EmailsFirstTests(TestCase):
+    def setUp(self):
+        from .models import Market
+        self.us = Market.objects.get(name="United States")
+
+    def _scanned(self, category, n, with_email):
+        for i in range(n):
+            Lead.objects.create(name=f"{category}{i}", category=category, market=self.us,
+                                contacts_checked_at=timezone.now(), email=f"a{i}@{category}.com" if i < with_email else "")
+
+    def test_poor_sectors_are_skipped(self):
+        config = AgentConfig.get()
+        config.target_categories = "craft=plumber\noffice=lawyer"
+        from .models import Market
+        Market.objects.exclude(pk=self.us.pk).update(enabled=False)
+        self.us.cities = "Houston, United States"
+        self.us.save()
+        self._scanned("plumber", 40, 1)    # 2.5% -> poor
+        self._scanned("lawyer", 40, 20)    # 50%
+        with mock.patch.object(discovery, "discover", return_value=0) as d:
+            discovery.discover_next(config)
+            discovery.discover_next(config)
+        self.assertEqual([c.args[1] for c in d.call_args_list], ["office=lawyer", "office=lawyer"])
+        config.skip_poor_sectors = False
+        with mock.patch.object(discovery, "discover", return_value=0) as d:
+            discovery.discover_next(config)
+            discovery.discover_next(config)
+        self.assertEqual(sorted(c.args[1] for c in d.call_args_list), ["craft=plumber", "office=lawyer"])
+
+    @mock.patch("agent.services.gigs.requests.get", return_value=mock.Mock(status_code=403))
+    def test_blocked_subreddit_paused_for_a_day(self, get):
+        from .services import gigs
+        config = AgentConfig.get()
+        config.gig_subreddits = "jobbit"
+        config.hn_gigs_enabled = config.remotive_enabled = config.mastodon_enabled = False
+        gigs.find_gigs(config, force=True)
+        calls = get.call_count
+        gigs.find_gigs(config, force=True)
+        self.assertEqual(get.call_count, calls)  # not retried for 24 hours
+        self.assertIn("reddit:jobbit", AgentConfig.get().gig_source_pauses)
+        self.assertEqual(Activity.objects.filter(text__contains="r/jobbit").count(), 1)
+
+    @mock.patch("agent.services.research.scan_many")
+    def test_refresh_contacts_revives_leads(self, scan_many):
+        from django.core.management import call_command
+        dm = Lead.objects.create(name="DM", website="https://dm.com", market=self.us, status="no_email", fit_score=80)
+        dead = Lead.objects.create(name="Dead", website="https://dead.com", market=self.us, status="disqualified",
+                                   fit_reason="No email, phone or social account found.")
+        poor = Lead.objects.create(name="Poor", website="https://poor.com", market=self.us, status="disqualified",
+                                   fit_score=20, fit_reason="Too big")
+        facts = {"emails": ["x@y.com"], "phones": [], "whatsapp": [], "socials": {}}
+        scan_many.side_effect = lambda leads, **k: [dict(facts) for _ in leads]
+        with mock.patch("agent.management.commands.refresh_contacts.scan_many", scan_many):
+            call_command("refresh_contacts", stdout=mock.Mock())
+        for lead in (dm, dead, poor):
+            lead.refresh_from_db()
+        self.assertEqual((dm.status, dead.status, poor.status), ("qualified", "new", "disqualified"))
+        self.assertTrue(all(l.email == "x@y.com" for l in (dm, dead, poor)))
