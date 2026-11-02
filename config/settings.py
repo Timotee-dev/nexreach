@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -156,3 +157,6 @@ LOGO_FILE = os.getenv('LOGO_FILE', 'agent/logo.svg')
 # Optional extra lead source: Foursquare Places (free for the first 500 searches a month)
 FOURSQUARE_API_KEY = os.getenv('FOURSQUARE_API_KEY', '')
 FOURSQUARE_API_VERSION = os.getenv('FOURSQUARE_API_VERSION', '2025-06-17')
+
+# Skip email addresses whose domain can't receive mail (needs dnspython). Off while running tests.
+EMAIL_MX_CHECK = os.getenv('EMAIL_MX_CHECK', 'True') == 'True' and 'test' not in sys.argv[1:2]

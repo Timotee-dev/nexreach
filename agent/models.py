@@ -141,6 +141,17 @@ class AgentConfig(models.Model):
         help_text="Used for leads that aren't linked to a market.",
     )
 
+    # Email finding
+    daily_email_target = models.PositiveIntegerField(
+        default=30, help_text="Keep searching each day until this many new business emails are found."
+    )
+    scan_per_tick = models.PositiveIntegerField(
+        default=25, help_text="Websites to scan for contact details per check-in (free, no Claude)."
+    )
+    only_contactable = models.BooleanField(
+        default=True, help_text="When searching maps, only collect businesses that list a website or email."
+    )
+
     # Extra business source
     foursquare_monthly_limit = models.PositiveIntegerField(
         default=450,
@@ -280,6 +291,10 @@ class Lead(models.Model):
     whatsapp_message = models.TextField(blank=True, help_text="Ready-to-send direct message written by Claude.")
     whatsapp_sent_at = models.DateTimeField(null=True, blank=True)
     dm_channel = models.CharField(max_length=20, blank=True, help_text="Where you sent the direct message.")
+
+    contacts_checked_at = models.DateTimeField(null=True, blank=True, help_text="When the free website scan ran.")
+    email_found_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    scan_cache = models.JSONField(default=dict, blank=True)
 
     followups_sent = models.PositiveIntegerField(default=0)
     last_contacted_at = models.DateTimeField(null=True, blank=True)

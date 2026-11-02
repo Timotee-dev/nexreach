@@ -920,3 +920,102 @@ class MoreSourceTests(TestCase):
         self.assertIn("healthcare=physiotherapist", AgentConfig.get().categories)
         self.assertIn("jobbit", AgentConfig.get().subreddits)
         self.assertContains(self.client.get(reverse("settings")), "Mastodon")
+
+
+class EmailFinderTests(TestCase):
+    def setUp(self):
+        from .models import Market
+        self.us = Market.objects.get(name="United States")
+
+    def test_extraction_tricks(self):
+        key = 0x42
+        cf = format(key, "02x") + "".join(format(ord(c) ^ key, "02x") for c in "hello@acmelaw.com")
+        html = f"""<html><body>
+          <span class="__cf_email__" data-cfemail="{cf}">[email&#160;protected]</span>
+          <p>Write to office [at] acmelaw [dot] com</p>
+          <p>noreply@acmelaw.com</p><p>privacy@acmelaw.com</p>
+          <script type="application/ld+json">{{"@type":"LegalService","email":"intake@acmelaw.com"}}</script>
+          <a href="mailto:partner@gmail.com">x</a>
+        </body></html>"""
+        emails = research.find_emails(html, "acmelaw.com")
+        self.assertIn("hello@acmelaw.com", emails)
+        self.assertIn("office@acmelaw.com", emails)
+        self.assertIn("intake@acmelaw.com", emails)
+        self.assertNotIn("noreply@acmelaw.com", emails)
+        self.assertEqual(emails[0], "hello@acmelaw.com")          # own domain + role address first
+        self.assertEqual(emails[-1], "partner@gmail.com")         # other domains last
+        self.assertLess(emails.index("intake@acmelaw.com"), emails.index("privacy@acmelaw.com"))
+
+    def test_contact_links(self):
+        html = '<a href="/about-us">About</a><a href="https://other.com/contact">x</a><a href="/services">Get in touch</a><a href="mailto:a@b.com">contact</a>'
+        self.assertEqual(research.contact_links(html, "https://firm.com/"),
+                         ["https://firm.com/about-us", "https://firm.com/services"])
+
+    @override_settings(EMAIL_MX_CHECK=True)
+    def test_mx_check(self):
+        research.has_mx.cache_clear()
+        with mock.patch("agent.services.research.has_mx", side_effect=lambda d: d != "dead-domain.com"):
+            self.assertTrue(research.usable_email("info@firm.com"))
+            self.assertFalse(research.usable_email("info@dead-domain.com"))
+            self.assertFalse(research.usable_email("noreply@firm.com"))
+            data = {"name": "Dead Co", "email": "info@dead-domain.com", "source": "osm", "source_id": "osm:node/1"}
+            lead = discovery._create_lead(data, self.us)
+            self.assertEqual((lead.email, lead.email_found_at), ("", None))
+
+    def test_contactable_query(self):
+        q = discovery.overpass_query(1, "office=lawyer", 60, contactable_only=True)
+        for key in ("website", "contact:website", "email", "contact:email"):
+            self.assertIn(f'["office"="lawyer"]["name"]["{key}"]', q)
+        self.assertIn("out center tags 60", q)
+        self.assertNotIn('["website"]', discovery.overpass_query(1, "office=lawyer", 60))
+
+    def test_scan_finds_emails_sets_aside_dead_ends_and_saves_claude(self):
+        a = Lead.objects.create(name="A", website="https://a.com", market=self.us)
+        b = Lead.objects.create(name="B", website="https://b.com", market=self.us)
+        c = Lead.objects.create(name="C", market=self.us)  # no website, nothing to contact
+        facts = {
+            "A": {"emails": ["info@a.com"], "phones": [], "whatsapp": [], "socials": {}, "signals": ["No HTTPS"], "text": "law", "title": "A"},
+            "B": {"emails": [], "phones": ["+17135550142"], "whatsapp": [], "socials": {}, "signals": [], "text": "", "title": "B"},
+            "C": {"emails": [], "phones": [], "whatsapp": [], "socials": {}, "signals": ["No website listed"], "text": "", "title": ""},
+        }
+        with mock.patch("agent.services.research.gather", side_effect=lambda l, *a, **k: facts[l.name]):
+            self.assertEqual(research.scan_contacts(AgentConfig.get()), 1)
+        a.refresh_from_db(); b.refresh_from_db(); c.refresh_from_db()
+        self.assertEqual((a.email, a.status), ("info@a.com", "new"))
+        self.assertIsNotNone(a.email_found_at)
+        self.assertEqual(b.phone, "+17135550142")
+        self.assertEqual(c.status, Lead.Status.DISQUALIFIED)
+        self.assertEqual(research.emails_found_today(), 1)
+        # Emailable leads are researched first, and research reuses the scan (no second website visit).
+        queue = [l.name for l in research.research_queue(AgentConfig.get())]
+        self.assertEqual(queue, ["A", "B"])
+        with mock.patch("agent.services.research.gather") as gather, \
+             mock.patch("agent.services.research.llm.ask_json", return_value={"fit_score": 80, "summary": "s", "hook": "h", "fit_reason": "r"}):
+            research.research_lead(a)
+            gather.assert_not_called()
+        a.refresh_from_db()
+        self.assertEqual((a.status, a.site_signals, a.scan_cache), (Lead.Status.QUALIFIED, ["No HTTPS"], {}))
+
+    @mock.patch("agent.services.loop.discovery.discover_next", return_value=50)
+    def test_discovery_keeps_going_until_daily_target(self, discover_next):
+        config = AgentConfig.get()
+        config.daily_email_target, config.scan_per_tick, config.min_new_leads = 2, 3, 1
+        Lead.objects.create(name="waiting", market=self.us, email="w@w.com", contacts_checked_at=timezone.now())
+        self.assertEqual(loop.maybe_discover(config), 50)                       # behind target -> search
+        for i in range(2):
+            Lead.objects.create(name=f"f{i}", market=self.us, email=f"f{i}@f.com", email_found_at=timezone.now(),
+                                status="qualified")
+        self.assertEqual(loop.maybe_discover(config), 0)                        # target met, queue not empty
+        for i in range(3):
+            Lead.objects.create(name=f"u{i}", market=self.us)                   # unscanned queue full
+        config.daily_email_target = 99
+        self.assertEqual(loop.maybe_discover(config), 0)
+
+    def test_dashboard_counter(self):
+        user = User.objects.create_superuser("t", "t@t.com", "pw")
+        self.client.force_login(user)
+        Lead.objects.create(name="x", market=self.us, email="x@x.com", email_found_at=timezone.now())
+        page = self.client.get(reverse("dashboard"))
+        self.assertContains(page, "New emails found today")
+        self.assertContains(page, "1<span")
+        self.assertContains(self.client.get(reverse("settings")), "Daily email target")

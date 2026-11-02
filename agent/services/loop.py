@@ -44,8 +44,7 @@ def queue_followups(config):
 
 def research_batch(config):
     count = 0
-    leads = Lead.objects.filter(status=Lead.Status.NEW).filter(config.focus_filter()).order_by("created_at")
-    for lead in leads[: config.research_per_tick]:
+    for lead in research.research_queue(config)[: config.research_per_tick]:
         if lead.kind == "gig":
             gigs.research_gig(lead, config)
         else:
@@ -84,7 +83,13 @@ def whatsapp_batch(config):
 
 
 def maybe_discover(config):
-    if Lead.objects.filter(status=Lead.Status.NEW, kind="business").filter(config.focus_filter()).count() >= config.min_new_leads:
+    """Search for more businesses while today's email target isn't met and the scan queue is running low."""
+    waiting = Lead.objects.filter(status=Lead.Status.NEW, kind="business").filter(config.focus_filter())
+    unscanned = waiting.filter(contacts_checked_at__isnull=True).count()
+    behind = research.emails_found_today() < config.daily_email_target
+    if unscanned >= config.scan_per_tick:
+        return 0  # plenty already queued for the next scan
+    if not behind and waiting.count() >= config.min_new_leads:
         return 0
     return discovery.discover_next(config)
 
@@ -97,6 +102,7 @@ def tick() -> dict:
         "replies": _step("Checking inbox", inbox.check_inbox),
         "sent": _step("Sending approved emails", lambda: mailer.send_approved(config)),
         "followups": _step("Drafting follow-ups", lambda: queue_followups(config)),
+        "emails_found": _step("Scanning websites for contacts", lambda: research.scan_contacts(config)),
         "researched": _step("Researching leads", lambda: research_batch(config)),
         "drafted": _step("Drafting emails", lambda: draft_batch(config)),
         "messages": _step("Writing direct messages", lambda: whatsapp_batch(config)),

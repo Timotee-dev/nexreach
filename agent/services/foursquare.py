@@ -121,7 +121,9 @@ def discover(city: str, tag: str, market: Market | None, limit: int = 50) -> int
             continue
         if Lead.objects.filter(name__iexact=data["name"], city__iexact=city).exists():
             continue  # already found on OpenStreetMap
-        Lead.objects.create(market=market, **data)
+        from .discovery import _create_lead
+
+        _create_lead(data, market)
         created += 1
     log(f"Found {created} new businesses on Foursquare for {search_words(tag)} in {city}.", "success" if created else "info")
     return created

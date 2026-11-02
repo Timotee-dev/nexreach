@@ -12,7 +12,8 @@
   </div>
 </div>
 
-<div class="grid g4" style="margin-bottom:16px">
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px">
+  <div class="card stat"><div class="n">{{ emails_today }}<span class="muted" style="font-size:16px"> / {{ config.daily_email_target }}</span></div><div class="l">New emails found today</div></div>
   <div class="card stat"><div class="n">{{ pending_count }}</div><div class="l">Waiting for your approval</div></div>
   <div class="card stat"><div class="n">{{ approved_count }}</div><div class="l">Approved, sending next check-in</div></div>
   <div class="card stat"><div class="n">{{ sent_today }}<span class="muted" style="font-size:16px"> / {{ config.daily_send_limit }}</span></div><div class="l">Cold emails sent today</div></div>

@@ -71,14 +71,17 @@ def city_area_id(city: str):
     return 3600000000 + int(best["osm_id"])
 
 
-def overpass_query(area_id: int, tag: str, limit: int) -> str:
+CONTACT_KEYS = ["website", "contact:website", "url", "email", "contact:email"]
+
+
+def overpass_query(area_id: int, tag: str, limit: int, contactable_only: bool = False) -> str:
+    """Businesses with this tag and a name. With contactable_only, only ones that list a website or
+    email, which is where emails come from."""
     key, value = [part.strip() for part in tag.split("=", 1)]
-    selector = f'["{key}"="{value}"]["name"]'
-    return (
-        f"[out:json][timeout:60];area(id:{area_id})->.a;"
-        f"(node{selector}(area.a);way{selector}(area.a);relation{selector}(area.a););"
-        f"out center tags {limit};"
-    )
+    base = f'["{key}"="{value}"]["name"]'
+    selectors = [base + f'["{k}"]' for k in CONTACT_KEYS] if contactable_only else [base]
+    parts = "".join(f"{t}{sel}(area.a);" for sel in selectors for t in ("node", "way", "relation"))
+    return f"[out:json][timeout:90];area(id:{area_id})->.a;({parts});out center tags {limit};"
 
 
 OSM_SOCIAL_TAGS = {
@@ -127,12 +130,14 @@ def parse_element(element: dict, city: str, tag: str) -> dict | None:
     }
 
 
-def discover(city: str, tag: str, limit: int = 40, market: Market | None = None) -> int:
+def discover(city: str, tag: str, limit: int = 60, market: Market | None = None, contactable_only: bool | None = None) -> int:
+    if contactable_only is None:
+        contactable_only = AgentConfig.get().only_contactable
     area_id = city_area_id(city)
     if not area_id:
         log(f"Couldn't find the area for '{city}' on OpenStreetMap.", "warning")
         return 0
-    result = run_overpass(overpass_query(area_id, tag, limit))
+    result = run_overpass(overpass_query(area_id, tag, limit, contactable_only))
     created = 0
     for element in result.get("elements", []):
         data = parse_element(element, city, tag)
@@ -140,10 +145,25 @@ def discover(city: str, tag: str, limit: int = 40, market: Market | None = None)
             continue
         if Lead.objects.filter(name__iexact=data["name"], city__iexact=city).exists():
             continue
-        Lead.objects.create(market=market, **data)
+        _create_lead(data, market)
         created += 1
     log(f"Found {created} new businesses for {tag} in {city}.", "success" if created else "info")
     return created
+
+
+def _create_lead(data: dict, market: Market | None):
+    """Save a found business; an email from the listing counts only if its domain can receive mail."""
+    from django.utils import timezone
+
+    from .research import usable_email
+
+    if data.get("email") and not usable_email(data["email"]):
+        data["email"] = ""
+    lead = Lead(market=market, **data)
+    if lead.email:
+        lead.email_found_at = timezone.now()
+    lead.save()
+    return lead
 
 
 def search_plan(config: AgentConfig) -> list[tuple[Market, str, str]]:
@@ -161,7 +181,7 @@ def search_plan(config: AgentConfig) -> list[tuple[Market, str, str]]:
     return plan
 
 
-def discover_next(config: AgentConfig | None = None, limit: int = 40) -> int:
+def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     """Search the next country/city/sector in rotation, on Foursquare (when set up and within the
     monthly free allowance) and on OpenStreetMap."""
     from . import foursquare
@@ -178,7 +198,7 @@ def discover_next(config: AgentConfig | None = None, limit: int = 40) -> int:
             found += foursquare.discover(city, tag, market)
         except (foursquare.FoursquareError, requests.RequestException) as exc:
             log(f"Foursquare: {exc}", "warning")
-    found += discover(city, tag, limit, market=market)  # raises OverpassBusy -> same search is retried next time
+    found += discover(city, tag, limit, market=market, contactable_only=config.only_contactable)  # raises OverpassBusy -> same search is retried next time
     config.discovery_cursor = (config.discovery_cursor + 1) % len(plan)
     config.save(update_fields=["discovery_cursor"])
     return found

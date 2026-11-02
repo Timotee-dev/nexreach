@@ -194,6 +194,20 @@ day, always linking back to Remotive) and Mastodon posts on hiring hashtags that
 for a developer. Subreddits checked by default: forhire, freelance_forhire, hiring, jobbit
 and WebDeveloperJobs.
 
+## Finding emails
+
+Each check-in, a free step (no Claude) scans up to 25 new businesses' websites in parallel for
+emails, phone/WhatsApp numbers and social accounts. It checks the homepage, the contact/about
+pages the site links to, and common paths; it decodes Cloudflare-protected and "name [at]
+domain [dot] com" addresses, prefers the business's own role addresses (info@, hello@...),
+and drops addresses whose domain can't receive mail. Map searches only collect businesses
+that list a website or email. The agent keeps searching until the **daily email target**
+(30 by default, on the dashboard) is reached. Claude only researches businesses you can
+actually contact, emailable ones first.
+
+Finding 30 emails a day is separate from sending: the daily send limit still decides how
+many cold emails go out, so a new Gmail can warm up safely.
+
 ## Switching to your own domain later
 
 Buy the domain, set up the mailbox (Zoho or Google Workspace), then change

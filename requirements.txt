@@ -3,5 +3,6 @@ requests>=2.31
 beautifulsoup4>=4.12
 python-dotenv>=1.0
 tzdata  # time zones on Windows
+dnspython>=2.6  # checks email domains can receive mail
 # Only if you set LLM_BACKEND=api:
 # anthropic>=0.40

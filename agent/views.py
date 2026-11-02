@@ -43,6 +43,7 @@ def dashboard(request):
         "approved_count": Message.objects.filter(status=Message.Status.APPROVED).count(),
         "hot_leads": Lead.objects.filter(status__in=[Lead.Status.INTERESTED, Lead.Status.REPLIED])[:6],
         "call_list_count": by_status.get("no_email", 0),
+        "emails_today": research.emails_found_today(),
         "activity": Activity.objects.select_related("lead")[:12],
         **_nav_counts(),
     }
@@ -153,7 +154,10 @@ def lead_detail(request, pk):
     lead = get_object_or_404(Lead, pk=pk)
     form = LeadContactForm(request.POST or None, instance=lead)
     if request.method == "POST" and form.is_valid():
-        lead = form.save()
+        lead = form.save(commit=False)
+        if lead.email and "email" in form.changed_data:
+            lead.email_found_at = timezone.now()
+        lead.save()
         if lead.status == Lead.Status.NO_EMAIL and lead.email:
             lead.status = Lead.Status.QUALIFIED
             lead.save(update_fields=["status", "updated_at"])
@@ -292,7 +296,8 @@ def settings_view(request):
     groups = [
         ("You & your offer", ["agent_enabled", "sender_name", "company_name", "company_website", "offer",
                               "ideal_customer", "writing_rules", "signature", "opt_out_line"]),
-        ("Sectors to search", ["target_categories", "foursquare_monthly_limit"]),
+        ("Sectors to search", ["target_categories", "foursquare_monthly_limit", "daily_email_target",
+                               "scan_per_tick", "only_contactable"]),
         ("Gig postings", ["gigs_enabled", "gig_subreddits", "hn_gigs_enabled", "remotive_enabled",
                           "mastodon_enabled", "mastodon_tags", "mastodon_instance", "gig_keywords",
                           "gig_max_age_days", "gig_check_minutes"]),
