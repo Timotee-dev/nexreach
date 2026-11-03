@@ -156,6 +156,11 @@ class AgentConfig(models.Model):
     searches_when_behind = models.PositiveIntegerField(
         default=6, help_text="Map searches per check-in while today's email target isn't met."
     )
+    min_emails_per_search = models.PositiveIntegerField(
+        default=10,
+        help_text="Aim for at least this many emails per search; cities and sectors that keep falling short get skipped.",
+    )
+    search_size = models.PositiveIntegerField(default=200, help_text="Most businesses taken from one map search.")
     max_sector_share = models.PositiveIntegerField(
         default=20, help_text="Max % of the last 7 days' leads one sector may take before other sectors go first."
     )
@@ -259,6 +264,27 @@ class AgentConfig(models.Model):
         return models.Q(source="manual") | models.Q(market__enabled=True) | models.Q(kind="gig")
 
 
+class SearchRun(models.Model):
+    """One search (one sector in one city), so each search's email yield can be measured."""
+
+    market = models.ForeignKey("Market", null=True, blank=True, on_delete=models.SET_NULL)
+    city = models.CharField(max_length=120)
+    tag = models.CharField(max_length=80)
+    businesses = models.PositiveIntegerField(default=0)
+    reported = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.tag} in {self.city}"
+
+    @property
+    def sector(self):
+        return self.tag.split("=", 1)[-1].replace("_", " ")
+
+
 class Lead(models.Model):
     class Status(models.TextChoices):
         NEW = "new", "New"
@@ -283,6 +309,7 @@ class Lead(models.Model):
     email = models.EmailField(blank=True)
 
     market = models.ForeignKey(Market, null=True, blank=True, on_delete=models.SET_NULL, related_name="leads")
+    search_run = models.ForeignKey(SearchRun, null=True, blank=True, on_delete=models.SET_NULL, related_name="leads")
     kind = models.CharField(max_length=10, default="business", choices=[("business", "Business"), ("gig", "Gig post")], db_index=True)
     post_url = models.URLField(max_length=500, blank=True)
     post_title = models.CharField(max_length=300, blank=True)

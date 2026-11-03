@@ -8,7 +8,7 @@ import requests
 from django.conf import settings
 
 from ..contacts import social_url
-from ..models import AgentConfig, Lead, Market, log
+from ..models import AgentConfig, Lead, Market, SearchRun, log
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
@@ -144,7 +144,8 @@ def parse_element(element: dict, city: str, tag: str) -> dict | None:
     }
 
 
-def discover(city: str, tag: str, limit: int = 60, market: Market | None = None, contactable_only: bool | None = None) -> int:
+def discover(city: str, tag: str, limit: int = 60, market: Market | None = None, contactable_only: bool | None = None,
+             run: SearchRun | None = None) -> int:
     if contactable_only is None:
         contactable_only = AgentConfig.get().only_contactable
     area_id = cached_area_id(city, market)
@@ -159,13 +160,13 @@ def discover(city: str, tag: str, limit: int = 60, market: Market | None = None,
             continue
         if Lead.objects.filter(name__iexact=data["name"], city__iexact=city).exists():
             continue
-        _create_lead(data, market)
+        _create_lead(data, market, run)
         created += 1
     log(f"Found {created} new businesses for {tag} in {city}.", "success" if created else "info")
     return created
 
 
-def _create_lead(data: dict, market: Market | None):
+def _create_lead(data: dict, market: Market | None, run: SearchRun | None = None):
     """Save a found business; an email from the listing counts only if its domain can receive mail."""
     from django.utils import timezone
 
@@ -173,7 +174,7 @@ def _create_lead(data: dict, market: Market | None):
 
     if data.get("email") and not usable_email(data["email"]):
         data["email"] = ""
-    lead = Lead(market=market, **data)
+    lead = Lead(market=market, search_run=run, **data)
     if lead.email:
         lead.email_found_at = timezone.now()
     lead.save()
@@ -250,6 +251,35 @@ def is_poor_sector(tag: str, rates: dict) -> bool:
     return False
 
 
+MIN_RUNS_TO_JUDGE = 3
+
+
+def search_averages() -> tuple[dict, dict]:
+    """Average emails per finished search, by city and by sector: {name: (searches, average)}."""
+    from django.db.models import Count, Q
+
+    runs = (
+        SearchRun.objects.filter(reported=True)
+        .annotate(n=Count("leads"), emails=Count("leads", filter=~Q(leads__email="")))
+        .filter(n__gt=0)
+        .values("city", "tag", "emails")
+    )
+    by_city, by_tag = {}, {}
+    for r in runs:
+        by_city.setdefault(r["city"], []).append(r["emails"])
+        by_tag.setdefault(r["tag"], []).append(r["emails"])
+    avg = lambda d: {k: (len(v), sum(v) / len(v)) for k, v in d.items()}
+    return avg(by_city), avg(by_tag)
+
+
+def falls_short(city: str, tag: str, averages: tuple[dict, dict], minimum: int) -> bool:
+    by_city, by_tag = averages
+    for count, average in (by_city.get(city, (0, 0)), by_tag.get(tag, (0, 0))):
+        if count >= MIN_RUNS_TO_JUDGE and average < minimum:
+            return True
+    return False
+
+
 def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     """Search the next country/city/sector in rotation, on Foursquare (when set up and within the
     monthly free allowance) and on OpenStreetMap."""
@@ -265,17 +295,31 @@ def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     # Pick the next search in turn, preferring (1) sectors that show emails and aren't already
     # over-represented, then (2) any sector that shows emails, then (3) simply the next one.
     order = [(config.discovery_cursor + i) % len(plan) for i in range(len(plan))]
-    good = [i for i in order if not (rates and is_poor_sector(plan[i][2], rates))]
+    averages = search_averages() if config.min_emails_per_search else ({}, {})
+    good = [
+        i for i in order
+        if not (rates and is_poor_sector(plan[i][2], rates))
+        and not falls_short(plan[i][1], plan[i][2], averages, config.min_emails_per_search)
+    ]
     balanced = [i for i in good if not is_crowded_sector(plan[i][2], shares, config.max_sector_share)]
     config.discovery_cursor = (balanced or good or order)[0]
     market, city, tag = plan[config.discovery_cursor]
+    run = SearchRun.objects.create(market=market, city=city, tag=tag)
     found = 0
     if foursquare.available(config):
         try:
-            found += foursquare.discover(city, tag, market)
+            found += foursquare.discover(city, tag, market, run=run)
         except (foursquare.FoursquareError, requests.RequestException) as exc:
             log(f"Foursquare: {exc}", "warning")
-    found += discover(city, tag, limit, market=market, contactable_only=config.only_contactable)  # raises OverpassBusy -> same search is retried next time
+    try:
+        found += discover(city, tag, max(limit, config.search_size), market=market,
+                          contactable_only=config.only_contactable, run=run)
+    except OverpassBusy:
+        if not found:
+            run.delete()
+        raise  # the same search is retried next time
+    run.businesses = found
+    run.save(update_fields=["businesses"])
     config.discovery_cursor = (config.discovery_cursor + 1) % len(plan)
     config.save(update_fields=["discovery_cursor"])
     return found

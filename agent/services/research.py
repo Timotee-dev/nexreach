@@ -16,7 +16,7 @@ from django.utils import timezone
 from ..contacts import find_socials, normalise_phone
 from django.db.models import Case, IntegerField, Q, Value, When
 
-from ..models import AgentConfig, Lead, log
+from ..models import AgentConfig, Lead, SearchRun, log
 from . import llm
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -395,7 +395,7 @@ def scan_contacts(config: AgentConfig | None = None, limit: int | None = None, w
         Lead.objects.filter(status=Lead.Status.NEW, kind="business", contacts_checked_at__isnull=True)
         .filter(config.focus_filter())
         .select_related("market")
-        .order_by("created_at")[: limit or config.scan_per_tick]
+        .order_by("-created_at")[: limit or config.scan_per_tick]  # newest search first
     )
     if not leads:
         return 0
@@ -413,7 +413,36 @@ def scan_contacts(config: AgentConfig | None = None, limit: int | None = None, w
         lead.save()
     if found:
         log(f"Found {found} new email{'s' if found != 1 else ''} by scanning {len(leads)} websites.", "success")
+    report_finished_searches({l.search_run_id for l in leads if l.search_run_id}, config)
     return found
+
+
+def report_finished_searches(run_ids: set, config: AgentConfig | None = None):
+    """Once every business from a search has been scanned, log how many emails that search gave."""
+    config = config or AgentConfig.get()
+    for run in SearchRun.objects.filter(pk__in=run_ids, reported=False):
+        leads = run.leads.all()
+        if leads.filter(contacts_checked_at__isnull=True).exists():
+            continue
+        total = leads.count()
+        emails = leads.exclude(email="").count()
+        run.reported = True
+        run.save(update_fields=["reported"])
+        ok = emails >= config.min_emails_per_search
+        log(f"Search '{run.sector} in {run.city.split(',')[0]}': {total} businesses → {emails} emails"
+            f"{'' if ok else f' (below your {config.min_emails_per_search} minimum)'}.", "success" if ok else "info")
+
+
+def average_emails_per_search(last: int = 20) -> float | None:
+    from django.db.models import Count, Q
+
+    runs = list(
+        SearchRun.objects.filter(reported=True)
+        .annotate(n=Count("leads"), emails=Count("leads", filter=~Q(leads__email="")))
+        .filter(n__gt=0)
+        .values_list("emails", flat=True)[:last]
+    )
+    return round(sum(runs) / len(runs), 1) if runs else None
 
 
 def emails_found_today() -> int:

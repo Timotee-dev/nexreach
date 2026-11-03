@@ -1213,3 +1213,68 @@ class FinderTests(TestCase):
         t.join(timeout=2)
         self.assertFalse(t.is_alive())
         self.assertTrue(any("+3 emails" in l for l in lines))
+
+
+class PerSearchTests(TestCase):
+    def setUp(self):
+        from .models import Market
+        Market.objects.exclude(name="United States").update(enabled=False)
+        self.us = Market.objects.get(name="United States")
+        self.us.cities = "Chicago, United States\nTinyville, United States"
+        self.us.save()
+
+    def _finished_run(self, city, tag, emails, businesses=20):
+        from .models import SearchRun
+        run = SearchRun.objects.create(market=self.us, city=city, tag=tag, businesses=businesses, reported=True)
+        for i in range(businesses):
+            Lead.objects.create(name=f"{city}{tag}{run.pk}-{i}", market=self.us, search_run=run, category=tag,
+                                contacts_checked_at=timezone.now(), email=f"e{i}@x{run.pk}.com" if i < emails else "")
+        return run
+
+    @mock.patch("agent.services.discovery.run_overpass")
+    @mock.patch("agent.services.discovery.cached_area_id", return_value=1)
+    def test_search_is_recorded_sized_and_reported(self, _, overpass):
+        from .models import SearchRun
+        overpass.return_value = {"elements": [
+            {"type": "node", "id": i, "tags": {"name": f"Firm {i}", "website": f"https://f{i}.com"}} for i in range(12)
+        ]}
+        config = AgentConfig.get()
+        config.target_categories = "office=lawyer"
+        self.assertEqual(discovery.discover_next(config), 12)
+        self.assertIn("out center tags 200", overpass.call_args[0][0])
+        run = SearchRun.objects.get()
+        self.assertEqual((run.businesses, run.leads.count()), (12, 12))
+        facts = lambda l, *a, **k: {"emails": [f"info@{l.name.split()[1]}.com"] if int(l.name.split()[1]) < 11 else [],
+                                     "phones": [], "whatsapp": [], "socials": {}, "signals": [], "text": "", "title": ""}
+        with mock.patch("agent.services.research.gather", side_effect=facts):
+            research.scan_contacts(config, limit=50)
+        run.refresh_from_db()
+        self.assertTrue(run.reported)
+        self.assertTrue(Activity.objects.filter(text__contains="12 businesses → 11 emails").exists())
+        self.assertEqual(research.average_emails_per_search(), 11.0)
+
+    def test_cities_and_sectors_that_fall_short_are_skipped(self):
+        for _ in range(3):
+            self._finished_run("Tinyville, United States", "office=lawyer", emails=2)
+            self._finished_run("Chicago, United States", "office=lawyer", emails=25, businesses=30)  # sector avg 13.5
+        config = AgentConfig.get()
+        config.target_categories = "office=lawyer"
+        with mock.patch.object(discovery, "discover", return_value=0) as d:
+            for _ in range(3):
+                discovery.discover_next(config)
+        self.assertEqual({c.args[0] for c in d.call_args_list}, {"Chicago, United States"})
+        config.min_emails_per_search = 0
+        with mock.patch.object(discovery, "discover", return_value=0) as d:
+            discovery.discover_next(config)
+            discovery.discover_next(config)
+        self.assertIn("Tinyville, United States", {c.args[0] for c in d.call_args_list})
+
+    def test_dashboard_shows_average(self):
+        self._finished_run("Chicago, United States", "office=lawyer", emails=12)
+        self._finished_run("Chicago, United States", "amenity=dentist", emails=8)
+        user = User.objects.create_superuser("t", "t@t.com", "pw")
+        self.client.force_login(user)
+        page = self.client.get(reverse("dashboard"))
+        self.assertContains(page, "Avg emails per search")
+        self.assertContains(page, "10.0<span")
+        self.assertContains(self.client.get(reverse("settings")), "Min emails per search")

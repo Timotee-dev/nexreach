@@ -44,6 +44,7 @@ def dashboard(request):
         "hot_leads": Lead.objects.filter(status__in=[Lead.Status.INTERESTED, Lead.Status.REPLIED])[:6],
         "call_list_count": by_status.get("no_email", 0),
         "emails_today": research.emails_found_today(),
+        "per_search": research.average_emails_per_search(),
         "activity": Activity.objects.select_related("lead")[:12],
         **_nav_counts(),
     }
@@ -297,7 +298,7 @@ def settings_view(request):
         ("You & your offer", ["agent_enabled", "sender_name", "company_name", "company_website", "offer",
                               "ideal_customer", "writing_rules", "signature", "opt_out_line"]),
         ("Sectors to search", ["target_categories", "foursquare_monthly_limit", "daily_email_target",
-                               "searches_when_behind", "scan_per_tick", "only_contactable", "skip_poor_sectors", "max_sector_share",
+                               "searches_when_behind", "min_emails_per_search", "search_size", "scan_per_tick", "only_contactable", "skip_poor_sectors", "max_sector_share",
                                "research_dm_leads"]),
         ("Gig postings", ["gigs_enabled", "gig_subreddits", "hn_gigs_enabled", "remotive_enabled",
                           "mastodon_enabled", "mastodon_tags", "mastodon_instance", "gig_keywords",

@@ -111,7 +111,7 @@ def to_lead(place: dict, city: str, tag: str) -> dict | None:
     }
 
 
-def discover(city: str, tag: str, market: Market | None, limit: int = 50) -> int:
+def discover(city: str, tag: str, market: Market | None, limit: int = 50, run=None) -> int:
     from ..models import Lead
 
     created = 0
@@ -123,7 +123,7 @@ def discover(city: str, tag: str, market: Market | None, limit: int = 50) -> int
             continue  # already found on OpenStreetMap
         from .discovery import _create_lead
 
-        _create_lead(data, market)
+        _create_lead(data, market, run)
         created += 1
     log(f"Found {created} new businesses on Foursquare for {search_words(tag)} in {city}.", "success" if created else "info")
     return created
