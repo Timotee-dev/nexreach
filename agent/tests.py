@@ -970,12 +970,23 @@ class EmailFinderTests(TestCase):
             self.assertEqual((lead.email, lead.email_found_at), ("", None))
 
     def test_contactable_query(self):
-        q = discovery.overpass_query(1, "office=lawyer", 60, contactable_only=True)
-        self.assertIn('nwr["office"="lawyer"]["name"][~"^(website|contact:website|url|email|contact:email)$"~"."](area.a);', q)
-        self.assertEqual(q.count("(area.a)"), 1)  # one light lookup, not a 15-part union
-        self.assertIn("[timeout:120]", q)
+        q = discovery.overpass_query(1, "office=lawyer", 60, contactable_only=True)  # default: proven union format
+        for key in ("website", "contact:website", "url", "email", "contact:email"):
+            self.assertIn(f'nwr["office"="lawyer"]["name"]["{key}"](area.a);', q)
+        self.assertIn("[timeout:90]", q)
         self.assertIn("out center tags 60", q)
+        p = discovery.overpass_query(1, "office=lawyer", 60, contactable_only=True, style="pattern")
+        self.assertIn('[~"^(website|contact:website|url|email|contact:email)$"~"."]', p)
         self.assertNotIn("website", discovery.overpass_query(1, "office=lawyer", 60))
+        self.assertEqual(discovery.QUERY_STYLES[0], "union")
+
+    @mock.patch("agent.services.discovery.run_overpass")
+    def test_rejected_format_falls_back(self, run):
+        discovery._working_style["style"] = None
+        run.side_effect = [discovery.OverpassBadQuery("syntax"), {"elements": []}]
+        self.assertEqual(discovery.run_search(1, "office=lawyer", 60, True), {"elements": []})
+        self.assertIn('[~"^(', run.call_args_list[1][0][0])  # second try used the pattern format
+        discovery._working_style["style"] = None
 
     def test_scan_finds_emails_sets_aside_dead_ends_and_saves_claude(self):
         a = Lead.objects.create(name="A", website="https://a.com", market=self.us)
@@ -1242,7 +1253,7 @@ class PerSearchTests(TestCase):
         config = AgentConfig.get()
         config.target_categories = "office=lawyer"
         self.assertEqual(discovery.discover_next(config), 12)
-        self.assertIn("out center tags 200", overpass.call_args[0][0])
+        self.assertIn("out center tags 60", overpass.call_args[0][0])  # reliable size, no timeouts
         run = SearchRun.objects.get()
         self.assertEqual((run.businesses, run.leads.count()), (12, 12))
         facts = lambda l, *a, **k: {"emails": [f"info@{l.name.split()[1]}.com"] if int(l.name.split()[1]) < 11 else [],
@@ -1279,3 +1290,25 @@ class PerSearchTests(TestCase):
         self.assertContains(page, "Avg emails per search")
         self.assertContains(page, "10.0<span")
         self.assertContains(self.client.get(reverse("settings")), "Min emails per search")
+
+
+
+class RestoreTests(TestCase):
+    def test_migration_restores_reliable_settings(self):
+        import importlib
+        from django.apps import apps as global_apps
+        mig = importlib.import_module("agent.migrations.0013_back_to_reliable_search")
+        config = AgentConfig.get()
+        config.search_size = 200
+        config.target_categories = "\n".join(f"shop=x{i}" for i in range(200))
+        config.save()
+        mig.forwards(global_apps, None)
+        config.refresh_from_db()
+        self.assertEqual(config.search_size, 60)
+        self.assertEqual(len(config.categories), 29)
+        self.assertEqual(config.categories[0], "office=lawyer")
+        config.target_categories = "office=lawyer\namenity=dentist"  # a short custom list is left alone
+        config.save()
+        mig.forwards(global_apps, None)
+        config.refresh_from_db()
+        self.assertEqual(config.categories, ["office=lawyer", "amenity=dentist"])

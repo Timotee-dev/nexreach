@@ -160,7 +160,9 @@ class AgentConfig(models.Model):
         default=10,
         help_text="Aim for at least this many emails per search; cities and sectors that keep falling short get skipped.",
     )
-    search_size = models.PositiveIntegerField(default=200, help_text="Most businesses taken from one map search.")
+    search_size = models.PositiveIntegerField(
+        default=60, help_text="Most businesses taken from one map search (60 works reliably; bigger searches can time out)."
+    )
     max_sector_share = models.PositiveIntegerField(
         default=20, help_text="Max % of the last 7 days' leads one sector may take before other sectors go first."
     )

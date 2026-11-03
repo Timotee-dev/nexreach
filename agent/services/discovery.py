@@ -24,6 +24,10 @@ class OverpassBusy(Exception):
     pass
 
 
+class OverpassBadQuery(Exception):
+    """The server rejected the query itself (HTTP 400): try a different query style."""
+
+
 def run_overpass(query: str):
     """Run a query, falling back to the next server on overload (429/5xx), timeouts or connection errors."""
     problems = []
@@ -37,6 +41,8 @@ def run_overpass(query: str):
         if resp.status_code == 429 or resp.status_code >= 500:
             problems.append(f"{url.split('/')[2]}: HTTP {resp.status_code}")
             continue
+        if resp.status_code == 400:
+            raise OverpassBadQuery(resp.text[:300])
         resp.raise_for_status()
         return resp.json()
     raise OverpassBusy("All map servers are busy right now (" + "; ".join(problems) + "). The agent will try again next check-in.")
@@ -89,16 +95,45 @@ def city_area_id(city: str):
 CONTACT_KEYS = ["website", "contact:website", "url", "email", "contact:email"]
 
 
-def overpass_query(area_id: int, tag: str, limit: int, contactable_only: bool = False) -> str:
+QUERY_STYLES = ["union", "pattern", "plain"]  # union first: the format proven to work
+_working_style = {"style": None}
+
+
+def overpass_query(area_id: int, tag: str, limit: int, contactable_only: bool = False, style: str = "union") -> str:
     """Businesses with this tag and a name. With contactable_only, only ones that list a website or
-    email, which is where emails come from. One light lookup (nwr + a key pattern) instead of a
-    union of 15, so big cities don't time out."""
+    email, which is where emails come from.
+    - union:   one lookup per contact key (the format proven to work; tried first)
+    - pattern: one lookup using a key pattern (lighter, untested on the live server)
+    - plain:   no contact filter at all (always valid; the website scan sorts it out)"""
     key, value = [part.strip() for part in tag.split("=", 1)]
-    selector = f'["{key}"="{value}"]["name"]'
-    if contactable_only:
-        keys = "|".join(CONTACT_KEYS)  # e.g. ^(website|contact:website|...)$ — colons are literal in regex
-        selector += f'[~"^({keys})$"~"."]'
-    return f"[out:json][timeout:120];area(id:{area_id})->.a;nwr{selector}(area.a);out center tags {limit};"
+    base = f'["{key}"="{value}"]["name"]'
+    head = f"[out:json][timeout:90];area(id:{area_id})->.a;"
+    tail = f"out center tags {limit};"
+    if not contactable_only or style == "plain":
+        return f"{head}nwr{base}(area.a);{tail}"
+    if style == "union":
+        parts = "".join(f'nwr{base}["{k}"](area.a);' for k in CONTACT_KEYS)
+        return f"{head}({parts});{tail}"
+    keys = "|".join(CONTACT_KEYS)  # colons are literal in the pattern
+    return f'{head}nwr{base}[~"^({keys})$"~"."](area.a);{tail}'
+
+
+def run_search(area_id: int, tag: str, limit: int, contactable_only: bool) -> dict:
+    """Run the search in the first style the map server accepts, and remember which one works."""
+    styles = QUERY_STYLES if contactable_only else ["plain"]
+    if _working_style["style"] in styles:
+        styles = [_working_style["style"]] + [s for s in styles if s != _working_style["style"]]
+    last = None
+    for style in styles:
+        try:
+            result = run_overpass(overpass_query(area_id, tag, limit, contactable_only, style))
+        except OverpassBadQuery as exc:
+            last = exc
+            log(f"Map search format '{style}' was rejected; trying another.", "warning")
+            continue
+        _working_style["style"] = style
+        return result
+    raise OverpassBusy(f"The map server rejected every search format ({last}).")
 
 
 OSM_SOCIAL_TAGS = {
@@ -155,7 +190,7 @@ def discover(city: str, tag: str, limit: int = 60, market: Market | None = None,
     if not area_id:
         log(f"Couldn't find the area for '{city}' on OpenStreetMap.", "warning")
         return 0
-    result = run_overpass(overpass_query(area_id, tag, limit, contactable_only))
+    result = run_search(area_id, tag, limit, contactable_only)
     created = 0
     for element in result.get("elements", []):
         data = parse_element(element, city, tag)
@@ -283,6 +318,47 @@ def falls_short(city: str, tag: str, averages: tuple[dict, dict], minimum: int) 
     return False
 
 
+# Sectors known to publish emails often (the original list). New sectors are tried now and then and
+# earn more searches only once their websites show emails.
+def _core_sectors() -> set:
+    from ..models import HIGH_VALUE_SECTORS
+
+    return {t.strip() for t in HIGH_VALUE_SECTORS.splitlines()[:29] if t.strip()}
+
+
+CORE_PRIOR, NEW_PRIOR = 0.35, 0.10
+EXPLORE_EVERY = 5          # 1 search in 5 tries a new or untested sector
+LOOKAHEAD = 60             # how far ahead in the rotation to look for the best next search
+RATE_MIN_SCANNED = 15
+_explore_counter = {"n": 0}
+
+
+def expected_rate(tag: str, rates: dict, core: set) -> float:
+    from . import foursquare
+
+    best = None
+    for category in {tag.split("=", 1)[-1].replace("_", " "), foursquare.search_words(tag)}:
+        scanned, rate = rates.get(category, (0, 0))
+        if scanned >= RATE_MIN_SCANNED:
+            best = max(best or 0, rate)
+    if best is not None:
+        return best
+    return CORE_PRIOR if tag in core else NEW_PRIOR
+
+
+def pick_search(plan, candidates: list, rates: dict) -> int:
+    """Mostly take the search with the best expected email rate among the next few in rotation;
+    every few searches take the next one in turn so new sectors still get tried."""
+    if not candidates:
+        return 0
+    _explore_counter["n"] += 1
+    if _explore_counter["n"] % EXPLORE_EVERY == 0:
+        return candidates[0]
+    core = _core_sectors()
+    window = candidates[:LOOKAHEAD]
+    return max(window, key=lambda i: (expected_rate(plan[i][2], rates, core), -window.index(i)))
+
+
 def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     """Search the next country/city/sector in rotation, on Foursquare (when set up and within the
     monthly free allowance) and on OpenStreetMap."""
@@ -293,7 +369,8 @@ def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     if not plan:
         log("Enable at least one market (Markets page) and add sectors in Settings so the agent can find businesses.", "warning")
         return 0
-    rates = sector_email_rates() if config.skip_poor_sectors else {}
+    all_rates = sector_email_rates()
+    rates = all_rates if config.skip_poor_sectors else {}
     shares = sector_shares()
     # Pick the next search in turn, preferring (1) sectors that show emails and aren't already
     # over-represented, then (2) any sector that shows emails, then (3) simply the next one.
@@ -305,7 +382,7 @@ def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
         and not falls_short(plan[i][1], plan[i][2], averages, config.min_emails_per_search)
     ]
     balanced = [i for i in good if not is_crowded_sector(plan[i][2], shares, config.max_sector_share)]
-    config.discovery_cursor = (balanced or good or order)[0]
+    config.discovery_cursor = pick_search(plan, balanced or good or order, all_rates)
     market, city, tag = plan[config.discovery_cursor]
     run = SearchRun.objects.create(market=market, city=city, tag=tag)
     found = 0
