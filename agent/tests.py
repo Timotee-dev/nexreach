@@ -510,13 +510,13 @@ class OverpassFallbackTests(TestCase):
 
     @mock.patch("agent.services.discovery.requests.post", return_value=mock.Mock(status_code=504))
     @mock.patch("agent.services.discovery.city_area_id", return_value=1)
-    def test_all_busy_keeps_same_search_for_next_time(self, *_):
+    def test_all_busy_moves_on_to_next_search(self, *_):
         config = AgentConfig.get()
         before = config.discovery_cursor
         with self.assertRaises(discovery.OverpassBusy):
             discovery.discover_next(config)
         config.refresh_from_db()
-        self.assertEqual(config.discovery_cursor, before)
+        self.assertNotEqual(config.discovery_cursor, before)  # moves on instead of repeating the same search
         result = loop._step("Finding businesses", lambda: discovery.discover_next(config))
         self.assertEqual(result, 0)
         self.assertTrue(Activity.objects.filter(level="warning", text__contains="busy").exists())
@@ -971,10 +971,11 @@ class EmailFinderTests(TestCase):
 
     def test_contactable_query(self):
         q = discovery.overpass_query(1, "office=lawyer", 60, contactable_only=True)
-        for key in ("website", "contact:website", "email", "contact:email"):
-            self.assertIn(f'["office"="lawyer"]["name"]["{key}"]', q)
+        self.assertIn('nwr["office"="lawyer"]["name"][~"^(website|contact:website|url|email|contact:email)$"~"."](area.a);', q)
+        self.assertEqual(q.count("(area.a)"), 1)  # one light lookup, not a 15-part union
+        self.assertIn("[timeout:120]", q)
         self.assertIn("out center tags 60", q)
-        self.assertNotIn('["website"]', discovery.overpass_query(1, "office=lawyer", 60))
+        self.assertNotIn("website", discovery.overpass_query(1, "office=lawyer", 60))
 
     def test_scan_finds_emails_sets_aside_dead_ends_and_saves_claude(self):
         a = Lead.objects.create(name="A", website="https://a.com", market=self.us)

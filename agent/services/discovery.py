@@ -29,7 +29,8 @@ def run_overpass(query: str):
     problems = []
     for url in OVERPASS_URLS:
         try:
-            resp = requests.post(url, data={"data": query}, headers=_headers(), timeout=90)
+            # Give the server its full time limit (see overpass_query) before giving up on it.
+            resp = requests.post(url, data={"data": query}, headers=_headers(), timeout=150)
         except requests.RequestException as exc:
             problems.append(f"{url.split('/')[2]}: {exc.__class__.__name__}")
             continue
@@ -90,12 +91,14 @@ CONTACT_KEYS = ["website", "contact:website", "url", "email", "contact:email"]
 
 def overpass_query(area_id: int, tag: str, limit: int, contactable_only: bool = False) -> str:
     """Businesses with this tag and a name. With contactable_only, only ones that list a website or
-    email, which is where emails come from."""
+    email, which is where emails come from. One light lookup (nwr + a key pattern) instead of a
+    union of 15, so big cities don't time out."""
     key, value = [part.strip() for part in tag.split("=", 1)]
-    base = f'["{key}"="{value}"]["name"]'
-    selectors = [base + f'["{k}"]' for k in CONTACT_KEYS] if contactable_only else [base]
-    parts = "".join(f"{t}{sel}(area.a);" for sel in selectors for t in ("node", "way", "relation"))
-    return f"[out:json][timeout:90];area(id:{area_id})->.a;({parts});out center tags {limit};"
+    selector = f'["{key}"="{value}"]["name"]'
+    if contactable_only:
+        keys = "|".join(CONTACT_KEYS)  # e.g. ^(website|contact:website|...)$ — colons are literal in regex
+        selector += f'[~"^({keys})$"~"."]'
+    return f"[out:json][timeout:120];area(id:{area_id})->.a;nwr{selector}(area.a);out center tags {limit};"
 
 
 OSM_SOCIAL_TAGS = {
@@ -317,7 +320,11 @@ def discover_next(config: AgentConfig | None = None, limit: int = 60) -> int:
     except OverpassBusy:
         if not found:
             run.delete()
-        raise  # the same search is retried next time
+        # Move on rather than repeating this exact search (and its Foursquare call) every minute;
+        # it comes round again later in the rotation.
+        config.discovery_cursor = (config.discovery_cursor + 1) % len(plan)
+        config.save(update_fields=["discovery_cursor"])
+        raise
     run.businesses = found
     run.save(update_fields=["businesses"])
     config.discovery_cursor = (config.discovery_cursor + 1) % len(plan)
