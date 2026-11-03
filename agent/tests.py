@@ -1366,3 +1366,66 @@ class EmailsFoundPageTests(TestCase):
         with mock.patch("agent.services.llm.ask_json", side_effect=LLMError("usage limit reached")):
             r = self.client.post(reverse("emails_found"), {"action": "process_next"}, follow=True)
         self.assertContains(r, "usage limit reached")
+
+
+class BacklogTests(TestCase):
+    def setUp(self):
+        from .models import Market
+        self.us = Market.objects.get(name="United States")
+
+    def _waiting(self, n, domain="firm{i}.com"):
+        now = timezone.now()
+        return [Lead.objects.create(name=f"Firm {i}", email=f"info@{domain.format(i=i)}", market=self.us,
+                                    contacts_checked_at=now, email_found_at=now,
+                                    scan_cache={"signals": ["No HTTPS"], "text": "law", "title": "t"}) for i in range(n)]
+
+    def test_eight_businesses_per_claude_call(self):
+        leads = self._waiting(10)
+        def answer(prompt):
+            n = prompt.count("--- BUSINESS ")
+            return {"results": [{"i": i, "fit_score": 80 if i % 2 else 40, "fit_reason": "r", "summary": "s",
+                                 "hook": "h"} for i in range(1, n + 1)]}
+        with mock.patch("agent.services.llm.ask_json", side_effect=answer) as ask:
+            self.assertEqual(research.research_many(leads), 10)
+        self.assertEqual(ask.call_count, 2)  # 8 + 2, not 10 calls
+        statuses = [Lead.objects.get(pk=l.pk).status for l in leads]
+        self.assertEqual(statuses.count("qualified"), 5)
+        self.assertEqual(statuses.count("disqualified"), 5)
+
+    def test_missing_answers_fall_back_to_single_calls(self):
+        leads = self._waiting(3)
+        replies = [{"results": [{"i": 1, "fit_score": 90, "fit_reason": "r", "summary": "s", "hook": "h"}]},
+                   {"fit_score": 70, "fit_reason": "r2", "summary": "s", "hook": "h"},
+                   {"fit_score": 30, "fit_reason": "r3", "summary": "s", "hook": "h"}]
+        with mock.patch("agent.services.llm.ask_json", side_effect=replies):
+            research.research_many(leads)
+        self.assertEqual([Lead.objects.get(pk=l.pk).fit_score for l in leads], [90, 70, 30])
+
+    def test_chains_set_aside_without_claude(self):
+        for i in range(4):
+            Lead.objects.create(name=f"SATS {i}", email=f"branch{i}@sats.no", market=self.us,
+                                contacts_checked_at=timezone.now())
+        for i in range(4):
+            Lead.objects.create(name=f"Solo {i}", email=f"owner{i}@gmail.com", market=self.us,
+                                contacts_checked_at=timezone.now())
+        indie = Lead.objects.create(name="Indie", email="hi@indie.com", market=self.us, contacts_checked_at=timezone.now())
+        self.assertEqual(research.mark_chains(), 4)
+        self.assertEqual(Lead.objects.filter(email__endswith="@sats.no", status="disqualified").count(), 4)
+        self.assertIn("4 locations share sats.no", Lead.objects.filter(email__endswith="@sats.no").first().fit_reason)
+        self.assertFalse(Lead.objects.filter(email__endswith="@gmail.com", status="disqualified").exists())
+        indie.refresh_from_db()
+        self.assertEqual(indie.status, "new")
+
+    def test_placeholder_emails_ignored(self):
+        html = "<p>first.last@metosin.fi</p><p>fornavn.etternavn@firma.no</p><p>hello@metosin.fi</p>"
+        self.assertEqual(research.find_emails(html, "metosin.fi"), ["hello@metosin.fi"])
+
+    def test_tick_uses_batches(self):
+        self._waiting(5)
+        answer = lambda p: {"results": [{"i": i, "fit_score": 75, "fit_reason": "r", "summary": "s", "hook": "h"}
+                                        for i in range(1, p.count("--- BUSINESS ") + 1)]} if "--- BUSINESS" in p \
+            else {"subject": "s", "body": "b"}
+        with mock.patch("agent.services.llm.ask_json", side_effect=answer) as ask:
+            self.assertEqual(loop.research_batch(AgentConfig.get()), 5)
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(AgentConfig.get().research_per_tick, 16)

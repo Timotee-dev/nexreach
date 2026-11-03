@@ -4,6 +4,9 @@ import time
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from django.utils import timezone
+
+from agent.models import Activity
 from agent.services import finder
 from agent.services.loop import tick
 
@@ -37,8 +40,11 @@ class Command(BaseCommand):
         try:
             while True:
                 self.stdout.write(f"[{time.strftime('%H:%M')}] Agent checking in...")
+                started = timezone.now()
                 results = tick(finding=no_finder)
                 self.stdout.write(self.style.SUCCESS(f"  done: {results}"))
+                for problem in Activity.objects.filter(level="error", created_at__gte=started)[:5]:
+                    self.stdout.write(self.style.ERROR(f"  problem: {problem.text[:200]}"))
                 self.stdout.write(f"  next check-in in {minutes} min (Ctrl+C to stop)")
                 time.sleep(minutes * 60)
         except KeyboardInterrupt:

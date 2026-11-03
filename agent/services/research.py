@@ -22,7 +22,11 @@ from . import llm
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 BAD_EMAIL_PARTS = ("example.", "sentry", "wixpress", "domain.com", "@2x", ".png", ".jpg", ".jpeg", ".gif", ".webp",
                    ".svg", "yourname", "youremail", "your-email", "email@email", "noreply", "no-reply", "donotreply",
-                   "do-not-reply", "@sentry", "godaddy.com", "squarespace.com", "wordpress.com", "placeholder")
+                   "do-not-reply", "@sentry", "godaddy.com", "squarespace.com", "wordpress.com", "placeholder",
+                   # placeholder addresses shown as examples on websites (English, Norwegian, Finnish, German, French)
+                   "first.last@", "firstname", "first_name", "lastname", "name.surname", "fornavn", "etternavn",
+                   "etunimi", "sukunimi", "vorname", "nachname", "prenom.nom", "@email.com", "@mail.com",
+                   "user@", "username@")
 ROLE_FIRST = ("info@", "contact@", "hello@", "office@", "enquiries@", "inquiries@", "admin@", "sales@", "mail@",
               "reception@", "frontdesk@", "team@")
 ROLE_LAST = ("privacy@", "abuse@", "webmaster@", "postmaster@", "careers@", "jobs@", "hr@", "legal@", "dpo@")
@@ -328,6 +332,126 @@ def qualify(lead: Lead, facts: dict, config: AgentConfig) -> dict:
     }
 
 
+BATCH_SIZE = 8
+BATCH_PROMPT = """You qualify sales leads for {company}.
+
+WHAT WE SELL
+{offer}
+
+IDEAL CUSTOMER
+{icp}
+
+Below are {n} businesses. For EACH one, decide how good a fit it is (0-100) for what we sell. Score
+higher when there is a clear, specific problem we can solve. Score low for chains, franchises, large
+companies and businesses that already have modern systems. Only use the facts given; never invent details.
+
+{businesses}
+
+JSON: {{"results": [{{"i": <number>, "fit_score": <0-100>, "fit_reason": "<one sentence>",
+"summary": "<1-2 sentences from the facts only>", "hook": "<one specific, true observation to open a cold
+email with, or empty>"}}, ...]}} with one entry per business, using its number as "i".
+"""
+
+
+def _facts_for(lead: Lead) -> dict:
+    facts = lead.scan_cache if lead.scan_cache.get("signals") is not None and lead.contacts_checked_at else None
+    if facts is None:
+        facts = gather(lead, lead.calling_code)
+        apply_contacts(lead, facts)
+    return facts
+
+
+def _apply_result(lead: Lead, facts: dict, result: dict, config: AgentConfig) -> Lead:
+    try:
+        score = max(0, min(100, int(result.get("fit_score", 0))))
+    except (TypeError, ValueError):
+        score = 0
+    lead.site_signals = facts.get("signals") or []
+    lead.fit_score = score
+    lead.fit_reason = str(result.get("fit_reason", ""))[:1000]
+    lead.research_summary = str(result.get("summary", ""))[:2000]
+    lead.hook = str(result.get("hook", ""))[:1000]
+    lead.researched_at = timezone.now()
+    lead.scan_cache = {}
+    if lead.fit_score < config.min_fit_score:
+        lead.status = Lead.Status.DISQUALIFIED
+    elif not lead.email:
+        lead.status = Lead.Status.NO_EMAIL
+    else:
+        lead.status = Lead.Status.QUALIFIED
+    lead.save()
+    log(f"Researched {lead.name}: fit {lead.fit_score}/100 → {lead.get_status_display()}.", lead=lead)
+    return lead
+
+
+def research_many(leads: list[Lead], config: AgentConfig | None = None) -> int:
+    """Research up to BATCH_SIZE businesses in ONE Claude call (about 8x more research per Claude limit).
+    If Claude's answer doesn't cover everyone, the rest are researched one by one."""
+    config = config or AgentConfig.get()
+    done = 0
+    for start in range(0, len(leads), BATCH_SIZE):
+        chunk = leads[start:start + BATCH_SIZE]
+        facts = [_facts_for(lead) for lead in chunk]
+        blocks = []
+        for i, (lead, f) in enumerate(zip(chunk, facts), 1):
+            blocks.append(
+                f"--- BUSINESS {i}\nName: {lead.name}\nCategory: {lead.category or 'unknown'}\n"
+                f"Location: {lead.city or 'unknown'}, {lead.market.name if lead.market_id else 'unknown'}\n"
+                f"Website: {lead.website or 'none'} | Email: {lead.email or 'none'}\n"
+                f"Page title: {f.get('title') or 'n/a'}\nProblems we detected: {'; '.join(f.get('signals') or []) or 'none found'}\n"
+                f"Website text: {(f.get('text') or '(none)')[:700]}"
+            )
+        data = llm.ask_json(BATCH_PROMPT.format(
+            company=config.company_name, offer=config.offer, icp=config.ideal_customer,
+            n=len(chunk), businesses="\n\n".join(blocks),
+        ))
+        by_index = {}
+        for row in data.get("results", []) if isinstance(data.get("results"), list) else []:
+            try:
+                by_index[int(row.get("i"))] = row
+            except (TypeError, ValueError, AttributeError):
+                continue
+        if not by_index and len(chunk) == 1 and "fit_score" in data:
+            by_index[1] = data  # a single business answered in the one-business shape
+        for i, (lead, f) in enumerate(zip(chunk, facts), 1):
+            result = by_index.get(i) or qualify(lead, f, config)  # fall back to one call for any it missed
+            _apply_result(lead, f, result, config)
+            done += 1
+    return done
+
+
+WEBMAIL = ("gmail.", "googlemail.", "yahoo.", "hotmail.", "outlook.", "live.", "icloud.", "aol.", "proton",
+           "gmx.", "mail.ru", "yandex.", "zoho.")
+CHAIN_MIN = 3
+
+
+def mark_chains(config: AgentConfig | None = None) -> int:
+    """Free (no Claude): when 3+ businesses share one email domain, they're branches of a chain or a
+    large company. Your ideal customer excludes those, so they're set aside before Claude sees them."""
+    from django.db.models import Count
+    from django.db.models.functions import Lower, Substr, StrIndex
+
+    rows = (
+        Lead.objects.filter(kind="business").exclude(email="")
+        .annotate(domain=Lower(Substr("email", StrIndex("email", Value("@")) + 1)))
+        .values("domain").annotate(n=Count("id")).filter(n__gte=CHAIN_MIN)
+    )
+    marked = 0
+    for row in rows:
+        domain = row["domain"]
+        if not domain or domain.startswith(WEBMAIL):
+            continue
+        waiting = Lead.objects.filter(kind="business", status=Lead.Status.NEW, email__iendswith="@" + domain)
+        n = waiting.update(
+            status=Lead.Status.DISQUALIFIED,
+            fit_reason=f"Chain or large company: {row['n']} locations share {domain}.",
+        )
+        if n:
+            log(f"Set aside {n} branches of a chain ({domain}) without using Claude.")
+        marked += n
+    return marked
+
+
 def apply_contacts(lead: Lead, facts: dict) -> list[str]:
     """Fill in missing contact details from gathered facts. Returns what changed."""
     changed = []
@@ -356,29 +480,8 @@ def apply_contacts(lead: Lead, facts: dict) -> list[str]:
 
 def research_lead(lead: Lead, config: AgentConfig | None = None) -> Lead:
     config = config or AgentConfig.get()
-    facts = lead.scan_cache if lead.scan_cache.get("signals") is not None and lead.contacts_checked_at else None
-    if facts is None:
-        facts = gather(lead, lead.calling_code)
-        apply_contacts(lead, facts)
-    result = qualify(lead, facts, config)
-
-    lead.site_signals = facts["signals"]
-    lead.fit_score = result["fit_score"]
-    lead.fit_reason = result["fit_reason"]
-    lead.research_summary = result["summary"]
-    lead.hook = result["hook"]
-    lead.researched_at = timezone.now()
-    lead.scan_cache = {}
-
-    if lead.fit_score < config.min_fit_score:
-        lead.status = Lead.Status.DISQUALIFIED
-    elif not lead.email:
-        lead.status = Lead.Status.NO_EMAIL
-    else:
-        lead.status = Lead.Status.QUALIFIED
-    lead.save()
-    log(f"Researched {lead.name}: fit {lead.fit_score}/100 → {lead.get_status_display()}.", lead=lead)
-    return lead
+    facts = _facts_for(lead)
+    return _apply_result(lead, facts, qualify(lead, facts, config), config)
 
 
 def scan_many(leads: list[Lead], timeout: int = 12, workers: int = 8) -> list[dict]:

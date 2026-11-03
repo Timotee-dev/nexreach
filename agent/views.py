@@ -411,10 +411,8 @@ def emails_found(request):
     if request.method == "POST" and request.POST.get("action") == "process_next":
         config = AgentConfig.get()
         try:
-            researched = 0
-            for lead in research.research_queue(config).filter(kind="business")[:10]:
-                research.research_lead(lead, config)
-                researched += 1
+            research.mark_chains(config)
+            researched = research.research_many(list(research.research_queue(config).filter(kind="business")[:16]), config)
             drafted = loop.draft_batch(config) if researched else 0
             drafted += loop.draft_batch(config) if drafted >= config.drafts_per_tick else 0
             flash.success(request, f"Checked {researched} businesses with Claude and drafted {drafted} emails.")

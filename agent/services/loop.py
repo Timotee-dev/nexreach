@@ -42,14 +42,17 @@ def queue_followups(config):
     return count
 
 
-def research_batch(config):
+def research_batch(config, limit: int | None = None):
+    """Gigs one by one; businesses 8 per Claude call. Chains are set aside first (free)."""
+    research.mark_chains(config)
+    queue = list(research.research_queue(config)[: limit or config.research_per_tick])
     count = 0
-    for lead in research.research_queue(config)[: config.research_per_tick]:
-        if lead.kind == "gig":
-            gigs.research_gig(lead, config)
-        else:
-            research.research_lead(lead, config)
+    for lead in [l for l in queue if l.kind == "gig"]:
+        gigs.research_gig(lead, config)
         count += 1
+    businesses = [l for l in queue if l.kind != "gig"]
+    if businesses:
+        count += research.research_many(businesses, config)
     return count
 
 

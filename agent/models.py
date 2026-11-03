@@ -115,7 +115,7 @@ class AgentConfig(models.Model):
     # Limits
     daily_send_limit = models.PositiveIntegerField(default=20)
     sends_per_tick = models.PositiveIntegerField(default=5)
-    research_per_tick = models.PositiveIntegerField(default=5)
+    research_per_tick = models.PositiveIntegerField(default=16, help_text="Businesses researched per check-in (8 per Claude call).")
     drafts_per_tick = models.PositiveIntegerField(default=5)
     min_fit_score = models.PositiveIntegerField(default=60)
     followup_days = models.PositiveIntegerField(default=4)

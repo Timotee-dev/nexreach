@@ -39,6 +39,7 @@ def cycle(config: AgentConfig | None = None) -> dict:
         except Exception as exc:  # network trouble shouldn't stop the finder
             log(f"Email finder search failed: {exc.__class__.__name__}: {exc}", "warning")
     found = research.scan_contacts(config, limit=SCAN_BATCH, workers=SCAN_WORKERS)
+    research.mark_chains(config)  # free: keep chain branches away from Claude
     return {"searched": searched, "emails_found": found, "emails_today": today + found}
 
 
