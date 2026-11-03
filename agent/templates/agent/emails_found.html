@@ -1,0 +1,63 @@
+{% extends "agent/base.html" %}
+{% block title %}Emails found{% endblock %}
+{% block content %}
+<div class="head">
+  <div><h1>Emails found</h1><div class="sub">Every business email NexReach has found, newest first, and the step each one is at. Claude checks them in turn at each check-in, or click a button to do it now.</div></div>
+  <form method="post">{% csrf_token %}<button class="btn primary" name="action" value="process_next">Process next 10 with Claude</button></form>
+</div>
+
+<div class="tabs">
+  <a href="?day=today&stage={{ stage }}" class="{% if day == 'today' %}on{% endif %}">Today</a>
+  <a href="?day=all&stage={{ stage }}" class="{% if day == 'all' %}on{% endif %}">All time</a>
+</div>
+<div class="tabs">
+  <a href="?day={{ day }}" class="{% if not stage %}on{% endif %}">All stages · {{ total }}</a>
+  {% for key, label, n in stage_counts %}<a href="?day={{ day }}&stage={{ key }}" class="{% if stage == key %}on{% endif %}">{{ label }} · {{ n }}</a>{% endfor %}
+</div>
+
+<div class="card" style="padding:0;overflow-x:auto">
+<table>
+  <thead><tr><th>Business</th><th>Email</th><th class="hide-sm">Found</th><th>Step</th><th></th></tr></thead>
+  <tbody>
+  {% for l in page %}
+  <tr>
+    <td><a href="{% url 'lead_detail' l.pk %}"><b>{{ l.name }}</b></a><div class="muted small">{{ l.category }}{% if l.city %} · {{ l.city }}{% endif %}</div></td>
+    <td class="small"><a href="mailto:{{ l.email }}">{{ l.email }}</a></td>
+    <td class="hide-sm muted small">{% if l.email_found_at %}{{ l.email_found_at|timesince }} ago{% endif %}</td>
+    <td class="small">
+      {% if l.stage == "waiting" %}<span class="pill">Waiting for Claude</span>
+      {% elif l.stage == "ready" %}<span class="pill qualified">Good fit · {{ l.fit_score }}</span>
+      {% elif l.stage == "drafted" %}<a class="pill drafted" href="{% url 'outbox' %}">Drafted: approve it →</a>
+      {% elif l.stage == "sent" %}<span class="pill contacted">Sent</span>
+      {% elif l.stage == "replied" %}<span class="pill interested">{{ l.get_status_display }}</span>
+      {% elif l.stage == "not_fit" %}<span class="pill disqualified">Not a fit{% if l.fit_score is not None %} · {{ l.fit_score }}{% endif %}</span><div class="muted" style="margin-top:3px">{{ l.fit_reason|truncatechars:110 }}</div>
+      {% else %}<span class="pill unsubscribed">{{ l.get_status_display }}</span>{% endif %}
+    </td>
+    <td style="text-align:right;white-space:nowrap">
+      {% if l.stage == "waiting" or l.stage == "not_fit" %}
+      <form method="post" action="{% url 'lead_action' l.pk %}">{% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button class="btn sm" name="action" value="research_and_draft">{% if l.stage == "not_fit" %}Re-check{% else %}Research &amp; draft now{% endif %}</button>
+      </form>
+      {% elif l.stage == "ready" %}
+      <form method="post" action="{% url 'lead_action' l.pk %}">{% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button class="btn sm" name="action" value="draft">Draft now</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% empty %}
+  <tr><td colspan="5" class="empty">No emails here{% if day == "today" %} yet today — try “All time”{% endif %}.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if page.has_other_pages %}
+<div class="row" style="margin-top:14px">
+  {% if page.has_previous %}<a class="btn sm" href="?day={{ day }}&stage={{ stage }}&page={{ page.previous_page_number }}">← Newer</a>{% endif %}
+  <span class="muted small">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}<a class="btn sm" href="?day={{ day }}&stage={{ stage }}&page={{ page.next_page_number }}">Older →</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

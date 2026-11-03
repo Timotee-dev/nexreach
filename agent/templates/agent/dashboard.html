@@ -13,7 +13,7 @@
 </div>
 
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px">
-  <div class="card stat"><div class="n">{{ emails_today }}<span class="muted" style="font-size:16px"> / {{ config.daily_email_target }}</span></div><div class="l">New emails found today</div></div>
+  <div class="card stat"><div class="n">{{ emails_today }}<span class="muted" style="font-size:16px"> / {{ config.daily_email_target }}</span></div><div class="l"><a href="{% url 'emails_found' %}?day=today">New emails found today</a></div></div>
   <div class="card stat"><div class="n">{% if per_search is not None %}{{ per_search }}{% else %}—{% endif %}<span class="muted" style="font-size:16px"> / {{ config.min_emails_per_search }}</span></div><div class="l">Avg emails per search (last 20)</div></div>
   <div class="card stat"><div class="n">{{ pending_count }}</div><div class="l">Waiting for your approval</div></div>
   <div class="card stat"><div class="n">{{ approved_count }}</div><div class="l">Approved, sending next check-in</div></div>

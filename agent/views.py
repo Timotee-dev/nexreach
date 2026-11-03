@@ -191,6 +191,13 @@ def lead_action(request, pk):
             else:
                 research.research_lead(lead)
             flash.success(request, f"Research done: fit {lead.fit_score}/100.")
+        elif action == "research_and_draft":
+            research.research_lead(lead)
+            if lead.status == Lead.Status.QUALIFIED and lead.email and not Suppression.blocked(lead.email):
+                writer.draft_initial(lead)
+                flash.success(request, f"{lead.name}: fit {lead.fit_score}/100. Email drafted: it's in Approve emails.")
+            else:
+                flash.info(request, f"{lead.name}: fit {lead.fit_score}/100, not drafted. {lead.fit_reason}")
         elif action == "draft":
             if not lead.email:
                 flash.error(request, "Add an email address first.")
@@ -265,6 +272,8 @@ def lead_action(request, pk):
             lead.save(update_fields=["whatsapp_sent_at", "updated_at"])
     except LLMError as exc:
         flash.error(request, str(exc))
+    if request.POST.get("next", "").startswith("/emails/"):
+        return redirect(request.POST["next"])
     if request.POST.get("next") == "call_list":
         return redirect(f"{reverse('call_list')}#lead-{lead.pk}")
     if request.POST.get("next") == "gigs":
@@ -370,4 +379,63 @@ def gigs_view(request):
     leads_qs = sorted(qs, key=lambda l: (l.whatsapp_sent_at is not None, -(l.fit_score or 0)))
     return render(request, "agent/gigs.html", {
         "leads": leads_qs, "counts": counts, "show_all": show_all, "config": config, **_nav_counts(),
+    })
+
+
+STAGES = [
+    ("waiting", "Waiting for Claude"),
+    ("ready", "Good fit, draft coming"),
+    ("drafted", "Drafted: approve it"),
+    ("sent", "Sent"),
+    ("replied", "Replied"),
+    ("not_fit", "Not a fit"),
+    ("stopped", "Stopped"),
+]
+STAGE_STATUSES = {
+    "waiting": [Lead.Status.NEW],
+    "ready": [Lead.Status.QUALIFIED],
+    "drafted": [Lead.Status.DRAFTED],
+    "sent": [Lead.Status.CONTACTED],
+    "replied": [Lead.Status.REPLIED, Lead.Status.INTERESTED, Lead.Status.CLOSED],
+    "not_fit": [Lead.Status.DISQUALIFIED, Lead.Status.NO_EMAIL],
+    "stopped": [Lead.Status.NOT_INTERESTED, Lead.Status.UNSUBSCRIBED, Lead.Status.BOUNCED],
+}
+STATUS_STAGE = {status: stage for stage, statuses in STAGE_STATUSES.items() for status in statuses}
+
+
+@login_required
+def emails_found(request):
+    """Every business email NexReach has found, and which step each one is at."""
+    from .services import loop
+
+    if request.method == "POST" and request.POST.get("action") == "process_next":
+        config = AgentConfig.get()
+        try:
+            researched = 0
+            for lead in research.research_queue(config).filter(kind="business")[:10]:
+                research.research_lead(lead, config)
+                researched += 1
+            drafted = loop.draft_batch(config) if researched else 0
+            drafted += loop.draft_batch(config) if drafted >= config.drafts_per_tick else 0
+            flash.success(request, f"Checked {researched} businesses with Claude and drafted {drafted} emails.")
+        except LLMError as exc:
+            flash.error(request, f"Claude couldn't run: {exc}")
+        return redirect(request.get_full_path())
+
+    day = request.GET.get("day", "today")
+    stage = request.GET.get("stage", "")
+    qs = Lead.objects.filter(kind="business").exclude(email="").select_related("market")
+    if day == "today":
+        start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+        qs = qs.filter(email_found_at__gte=start)
+    counts = dict(qs.values_list("status").annotate(n=Count("id")))
+    stage_counts = [(key, label, sum(counts.get(s, 0) for s in STAGE_STATUSES[key])) for key, label in STAGES]
+    if stage in STAGE_STATUSES:
+        qs = qs.filter(status__in=STAGE_STATUSES[stage])
+    page = Paginator(qs.order_by(F("email_found_at").desc(nulls_last=True), "-pk"), 50).get_page(request.GET.get("page"))
+    for lead in page:
+        lead.stage = STATUS_STAGE.get(lead.status, "")
+    return render(request, "agent/emails_found.html", {
+        "page": page, "day": day, "stage": stage, "stage_counts": stage_counts,
+        "total": sum(n for _, _, n in stage_counts), **_nav_counts(),
     })

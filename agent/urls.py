@@ -7,6 +7,7 @@ urlpatterns = [
     path("outbox/", views.outbox, name="outbox"),
     path("outbox/approve-all/", views.approve_all, name="approve_all"),
     path("messages/<int:pk>/", views.message_action, name="message_action"),
+    path("emails/", views.emails_found, name="emails_found"),
     path("leads/", views.leads, name="leads"),
     path("leads/add/", views.lead_add, name="lead_add"),
     path("leads/<int:pk>/", views.lead_detail, name="lead_detail"),

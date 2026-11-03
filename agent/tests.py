@@ -1312,3 +1312,57 @@ class RestoreTests(TestCase):
         mig.forwards(global_apps, None)
         config.refresh_from_db()
         self.assertEqual(config.categories, ["office=lawyer", "amenity=dentist"])
+
+
+class EmailsFoundPageTests(TestCase):
+    def setUp(self):
+        from .models import Market
+        self.us = Market.objects.get(name="United States")
+        user = User.objects.create_superuser("t", "t@t.com", "pw")
+        self.client.force_login(user)
+        now = timezone.now()
+        self.waiting = Lead.objects.create(name="Waiting Law", email="a@w.com", email_found_at=now, market=self.us,
+                                           contacts_checked_at=now)
+        self.drafted = Lead.objects.create(name="Drafted Dental", email="b@d.com", email_found_at=now, market=self.us,
+                                           status="drafted", fit_score=80)
+        self.not_fit = Lead.objects.create(name="Big Chain", email="c@c.com", email_found_at=now, market=self.us,
+                                           status="disqualified", fit_score=30, fit_reason="Large chain with a modern site")
+        Lead.objects.create(name="Old", email="d@o.com", email_found_at=now - timezone.timedelta(days=3), market=self.us)
+        Lead.objects.create(name="No email", market=self.us)
+
+    def test_lists_found_emails_with_their_step(self):
+        page = self.client.get(reverse("emails_found"))
+        for text in ("Waiting Law", "a@w.com", "Waiting for Claude", "Drafted: approve it", "Big Chain",
+                     "Large chain with a modern site", "Research &amp; draft now", "All stages · 3"):
+            self.assertContains(page, text)
+        self.assertNotContains(page, "No email")
+        self.assertNotContains(page, ">Old<")
+        self.assertContains(self.client.get(reverse("emails_found") + "?day=all"), "All stages · 4")
+        only = self.client.get(reverse("emails_found") + "?day=today&stage=not_fit")
+        self.assertContains(only, "Big Chain")
+        self.assertNotContains(only, "Waiting Law")
+        self.assertContains(self.client.get(reverse("dashboard")), "/emails/?day=today")
+
+    def test_research_and_draft_now(self):
+        claude = {"fit_score": 82, "fit_reason": "Small firm, old site", "summary": "s", "hook": "h",
+                  "subject": "quick idea", "body": "Hi"}
+        with mock.patch("agent.services.llm.ask_json", return_value=claude):
+            r = self.client.post(reverse("lead_action", args=[self.waiting.pk]),
+                                 {"action": "research_and_draft", "next": "/emails/?day=today"})
+        self.assertRedirects(r, "/emails/?day=today", fetch_redirect_response=False)
+        self.waiting.refresh_from_db()
+        self.assertEqual(self.waiting.status, Lead.Status.DRAFTED)
+        self.assertTrue(Message.objects.filter(lead=self.waiting, status="draft").exists())
+
+    def test_process_next_ten(self):
+        claude = {"fit_score": 75, "fit_reason": "r", "summary": "s", "hook": "h", "subject": "s", "body": "b"}
+        with mock.patch("agent.services.llm.ask_json", return_value=claude):
+            self.client.post(reverse("emails_found"), {"action": "process_next"})
+        self.waiting.refresh_from_db()
+        self.assertEqual(self.waiting.status, Lead.Status.DRAFTED)
+
+    def test_claude_limit_is_shown(self):
+        from .services.llm import LLMError
+        with mock.patch("agent.services.llm.ask_json", side_effect=LLMError("usage limit reached")):
+            r = self.client.post(reverse("emails_found"), {"action": "process_next"}, follow=True)
+        self.assertContains(r, "usage limit reached")
