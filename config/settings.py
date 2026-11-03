@@ -83,6 +83,8 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        # The email finder, the Claude loop and the dashboard write at the same time: wait, don't fail.
+        "OPTIONS": {"timeout": 30},
     }
 }
 

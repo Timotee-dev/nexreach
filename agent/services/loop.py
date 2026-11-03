@@ -99,7 +99,9 @@ def maybe_discover(config):
     return found
 
 
-def tick() -> dict:
+def tick(finding: bool = True) -> dict:
+    """One check-in. With finding=False, searching and website scanning are left to the separate
+    fast email finder (see services/finder.py) and this only does inbox, sending and Claude work."""
     config = AgentConfig.get()
     if not config.agent_enabled:
         return {"paused": True}
@@ -107,13 +109,16 @@ def tick() -> dict:
         "replies": _step("Checking inbox", inbox.check_inbox),
         "sent": _step("Sending approved emails", lambda: mailer.send_approved(config)),
         "followups": _step("Drafting follow-ups", lambda: queue_followups(config)),
-        "emails_found": _step("Scanning websites for contacts", lambda: research.scan_contacts(config)),
+    }
+    if finding:
+        results["discovered"] = _step("Finding businesses", lambda: maybe_discover(config))
+        results["emails_found"] = _step("Scanning websites for contacts", lambda: research.scan_contacts(config))
+    results.update({
         "researched": _step("Researching leads", lambda: research_batch(config)),
         "drafted": _step("Drafting emails", lambda: draft_batch(config)),
         "messages": _step("Writing direct messages", lambda: whatsapp_batch(config)),
-        "discovered": _step("Finding businesses", lambda: maybe_discover(config)),
         "gigs": _step("Finding gigs", lambda: gigs.find_gigs(config)),
-    }
+    })
     summary = ", ".join(f"{k} {v}" for k, v in results.items() if v)
     log(f"Agent check-in done — {summary or 'nothing needed doing'}.")
     return results

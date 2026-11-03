@@ -1145,3 +1145,71 @@ class SpreadTests(TestCase):
         discovery.discover("Houston, United States", "amenity=dentist", market=us, contactable_only=True)
         self.assertEqual(lookup.call_count, 1)
         self.assertEqual(Market.objects.get(pk=us.pk).area_ids["Houston, United States"], 3600000123)
+
+
+class FinderTests(TestCase):
+    def setUp(self):
+        from .models import Market
+        self.us = Market.objects.get(name="United States")
+
+    @mock.patch("agent.services.finder.research.scan_contacts", return_value=7)
+    @mock.patch("agent.services.finder.discovery.discover_next", return_value=40)
+    def test_cycle_searches_when_queue_low_then_scans(self, discover, scan):
+        from .services import finder
+        result = finder.cycle()
+        self.assertEqual(result, {"searched": 40, "emails_found": 7, "emails_today": 7})
+        scan.assert_called_once_with(mock.ANY, limit=finder.SCAN_BATCH, workers=finder.SCAN_WORKERS)
+        for i in range(finder.SCAN_BATCH):
+            Lead.objects.create(name=f"q{i}", market=self.us)  # queue full: no map search this round
+        discover.reset_mock()
+        finder.cycle()
+        discover.assert_not_called()
+
+    @mock.patch("agent.services.finder.research.scan_contacts")
+    def test_idle_when_target_met_or_paused(self, scan):
+        from .services import finder
+        config = AgentConfig.get()
+        config.daily_email_target = 1
+        config.save()
+        Lead.objects.create(name="x", market=self.us, email="x@x.com", email_found_at=timezone.now())
+        self.assertTrue(finder.cycle()["idle"])
+        config.agent_enabled = False
+        config.save()
+        self.assertEqual(finder.cycle(), {"paused": True})
+        scan.assert_not_called()
+
+    @mock.patch("agent.services.finder.research.scan_contacts", return_value=0)
+    @mock.patch("agent.services.finder.discovery.discover_next", side_effect=discovery.OverpassBusy("busy"))
+    def test_busy_map_servers_dont_stop_scanning(self, _, scan):
+        from .services import finder
+        self.assertEqual(finder.cycle()["searched"], 0)
+        scan.assert_called_once()
+        self.assertTrue(Activity.objects.filter(text__contains="Email finder: busy").exists())
+
+    @fake_claude()
+    @mock.patch("agent.services.loop.research.scan_contacts")
+    @mock.patch("agent.services.loop.maybe_discover")
+    def test_claude_tick_leaves_finding_to_the_finder(self, discover, scan, _):
+        with mock.patch("agent.services.loop.inbox.check_inbox", return_value=0), \
+             mock.patch("agent.services.loop.mailer.send_approved", return_value=0), \
+             mock.patch("agent.services.loop.gigs.find_gigs", return_value=0):
+            results = loop.tick(finding=False)
+        discover.assert_not_called()
+        scan.assert_not_called()
+        self.assertNotIn("discovered", results)
+
+    @mock.patch("agent.services.finder.cycle", return_value={"emails_found": 3, "emails_today": 3})
+    def test_background_loop_stops_cleanly(self, cycle):
+        import threading
+        from .services import finder
+        stop = threading.Event()
+        lines = []
+        t = threading.Thread(target=finder.run_forever, args=(stop, 0, lines.append))
+        t.start()
+        time_limit = __import__("time").time() + 2
+        while cycle.call_count < 2 and __import__("time").time() < time_limit:
+            pass
+        stop.set()
+        t.join(timeout=2)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(any("+3 emails" in l for l in lines))

@@ -196,6 +196,13 @@ and WebDeveloperJobs.
 
 ## Finding emails
 
+`run_agent` now runs two loops. A fast **email finder** runs in the background every minute:
+one map search when the queue is low, then 40 websites scanned 16 at a time, with no Claude
+involved. It rests once the daily email target is reached. The Claude check-ins (research,
+drafts, replies, sending) keep their own 15-minute schedule. Use `--finder-seconds 120` to
+slow the finder, or `--no-finder` for the old single loop.
+
+
 Each check-in, a free step (no Claude) scans up to 25 new businesses' websites in parallel for
 emails, phone/WhatsApp numbers and social accounts. It checks the homepage, the contact/about
 pages the site links to, and common paths; it decodes Cloudflare-protected and "name [at]

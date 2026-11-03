@@ -381,12 +381,12 @@ def research_lead(lead: Lead, config: AgentConfig | None = None) -> Lead:
     return lead
 
 
-def scan_many(leads: list[Lead], timeout: int = 12) -> list[dict]:
-    with ThreadPoolExecutor(max_workers=8) as pool:
+def scan_many(leads: list[Lead], timeout: int = 12, workers: int = 8) -> list[dict]:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(lambda l: gather(l, l.calling_code, timeout=timeout), leads))
 
 
-def scan_contacts(config: AgentConfig | None = None) -> int:
+def scan_contacts(config: AgentConfig | None = None, limit: int | None = None, workers: int = 8) -> int:
     """Free step (no Claude): visit new businesses' websites in parallel to find emails, phones and
     socials. Leads with no way to contact them are set aside so Claude isn't spent on them.
     Returns how many new emails were found."""
@@ -395,11 +395,11 @@ def scan_contacts(config: AgentConfig | None = None) -> int:
         Lead.objects.filter(status=Lead.Status.NEW, kind="business", contacts_checked_at__isnull=True)
         .filter(config.focus_filter())
         .select_related("market")
-        .order_by("created_at")[: config.scan_per_tick]
+        .order_by("created_at")[: limit or config.scan_per_tick]
     )
     if not leads:
         return 0
-    results = scan_many(leads)
+    results = scan_many(leads, workers=workers)
     found = 0
     for lead, facts in zip(leads, results):
         changed = apply_contacts(lead, facts)
