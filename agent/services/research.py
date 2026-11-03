@@ -319,7 +319,7 @@ def qualify(lead: Lead, facts: dict, config: AgentConfig) -> dict:
         signals="; ".join(facts["signals"]) or "none found",
         text=facts.get("text") or "(no website text)",
     )
-    data = llm.ask_json(prompt)
+    data = llm.ask_json(prompt, llm.cheap())
     try:
         score = max(0, min(100, int(data.get("fit_score", 0))))
     except (TypeError, ValueError):
@@ -404,7 +404,7 @@ def research_many(leads: list[Lead], config: AgentConfig | None = None) -> int:
         data = llm.ask_json(BATCH_PROMPT.format(
             company=config.company_name, offer=config.offer, icp=config.ideal_customer,
             n=len(chunk), businesses="\n\n".join(blocks),
-        ))
+        ), llm.cheap())
         by_index = {}
         for row in data.get("results", []) if isinstance(data.get("results"), list) else []:
             try:

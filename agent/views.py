@@ -11,7 +11,7 @@ from django.views.decorators.http import require_POST
 from .forms import ConfigForm, LeadContactForm, LeadForm
 from .models import Activity, AgentConfig, Lead, Market, Message, Suppression, log
 from .services import gigs as gig_service, research, writer
-from .services.llm import LLMError
+from .services.llm import LLMError, LLMLimit
 from .services.mailer import sent_today
 
 
@@ -45,6 +45,8 @@ def dashboard(request):
         "call_list_count": by_status.get("no_email", 0),
         "emails_today": research.emails_found_today(),
         "per_search": research.average_emails_per_search(),
+        "claude_paused_until": config.claude_paused_until
+        if config.claude_paused_until and config.claude_paused_until > timezone.now() else None,
         "activity": Activity.objects.select_related("lead")[:12],
         **_nav_counts(),
     }
@@ -415,7 +417,15 @@ def emails_found(request):
             researched = research.research_many(list(research.research_queue(config).filter(kind="business")[:16]), config)
             drafted = loop.draft_batch(config) if researched else 0
             drafted += loop.draft_batch(config) if drafted >= config.drafts_per_tick else 0
+            if config.claude_paused_until:
+                config.claude_paused_until = None
+                config.save(update_fields=["claude_paused_until"])
             flash.success(request, f"Checked {researched} businesses with Claude and drafted {drafted} emails.")
+        except LLMLimit as exc:
+            config.claude_paused_until = exc.resets_at
+            config.save(update_fields=["claude_paused_until"])
+            flash.error(request, "Your Claude usage limit is reached, so Claude can't check these yet. "
+                        f"It resets around {timezone.localtime(exc.resets_at):%a %H:%M}; the agent carries on by itself then.")
         except LLMError as exc:
             flash.error(request, f"Claude couldn't run: {exc}")
         return redirect(request.get_full_path())

@@ -16,7 +16,7 @@ GMAIL = dict(GMAIL_ADDRESS="me@gmail.com", GMAIL_APP_PASSWORD="abcd")
 
 def fake_claude(**answers):
     """One fake for all Claude calls; picks an answer by what the prompt is for."""
-    def respond(prompt):
+    def respond(prompt, model=""):
         if "Classify this reply" in prompt:
             return answers.get("classify", {"category": "other", "summary": ""})
         if "You qualify sales leads" in prompt:
@@ -312,7 +312,7 @@ class ViewTests(TestCase):
         r = self.client.post(reverse("lead_add"), {"name": "Foreign Co", "website": "https://foreign.co", "email": "x@foreign.co"})
         self.assertEqual(r.status_code, 302)
         self.assertTrue(Lead.objects.filter(name="Foreign Co", status="new").exists())
-        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at", "gig_source_pauses")}
+        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at", "gig_source_pauses", "claude_paused_until")}
         data["daily_send_limit"] = 12
         data["agent_enabled"] = "on"
         self.assertEqual(self.client.post(reverse("settings"), data).status_code, 302)
@@ -488,7 +488,7 @@ class GlobalMarketTests(TestCase):
         r = self.client.get(reverse("settings"))
         self.assertContains(r, "Sending &amp; compliance")
         self.assertContains(r, "Sectors to search")
-        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at", "gig_source_pauses")}
+        data = {f.name: getattr(AgentConfig.get(), f.name) for f in AgentConfig._meta.fields if f.name not in ("id", "updated_at", "discovery_cursor", "gigs_checked_at", "remotive_checked_at", "gig_source_pauses", "claude_paused_until")}
         for key in [k for k, v in data.items() if isinstance(v, bool)]:
             data[key] = "on" if data[key] else ""
         data["home_timezone"] = "Mars/Olympus"
@@ -1381,7 +1381,7 @@ class BacklogTests(TestCase):
 
     def test_eight_businesses_per_claude_call(self):
         leads = self._waiting(10)
-        def answer(prompt):
+        def answer(prompt, model=""):
             n = prompt.count("--- BUSINESS ")
             return {"results": [{"i": i, "fit_score": 80 if i % 2 else 40, "fit_reason": "r", "summary": "s",
                                  "hook": "h"} for i in range(1, n + 1)]}
@@ -1422,10 +1422,45 @@ class BacklogTests(TestCase):
 
     def test_tick_uses_batches(self):
         self._waiting(5)
-        answer = lambda p: {"results": [{"i": i, "fit_score": 75, "fit_reason": "r", "summary": "s", "hook": "h"}
+        answer = lambda p, model="": {"results": [{"i": i, "fit_score": 75, "fit_reason": "r", "summary": "s", "hook": "h"}
                                         for i in range(1, p.count("--- BUSINESS ") + 1)]} if "--- BUSINESS" in p \
             else {"subject": "s", "body": "b"}
         with mock.patch("agent.services.llm.ask_json", side_effect=answer) as ask:
             self.assertEqual(loop.research_batch(AgentConfig.get()), 5)
         self.assertEqual(ask.call_count, 1)
         self.assertEqual(AgentConfig.get().research_per_tick, 16)
+
+
+class ClaudeLimitTests(TestCase):
+    def test_reset_time_parses_midnight_lagos(self):
+        from zoneinfo import ZoneInfo
+        from agent.services import llm
+        when = llm.reset_time("You've hit your weekly limit · resets 12am (Africa/Lagos)")
+        local = when.astimezone(ZoneInfo("Africa/Lagos"))
+        self.assertEqual((local.hour, local.minute), (0, 2))
+        self.assertGreater(when, timezone.now())
+
+    def test_limit_error_pauses_claude_work_but_not_finding(self):
+        from unittest import mock
+        from agent.services import llm, loop
+        AgentConfig.get()
+        err = llm.LLMLimit("limit", timezone.now() + timedelta(hours=3))
+        with mock.patch.object(loop, "research_batch", side_effect=err) as rb, \
+             mock.patch.object(loop, "draft_batch", return_value=0) as db, \
+             mock.patch.object(loop.inbox, "check_inbox", return_value=0), \
+             mock.patch.object(loop.gigs, "find_gigs", return_value=0):
+            loop.tick(finding=False)
+            self.assertTrue(rb.called)
+            self.assertFalse(db.called)  # stopped straight after the limit
+            self.assertIsNotNone(AgentConfig.get().claude_paused_until)
+            rb.reset_mock()
+            loop.tick(finding=False)
+            self.assertFalse(rb.called)  # next check-in doesn't retry Claude
+
+    def test_cli_limit_message_raises_llmlimit(self):
+        from unittest import mock
+        from agent.services import llm
+        fake = mock.Mock(returncode=1, stdout='{"is_error": true, "result": "You\'ve hit your weekly limit · resets 12am (Africa/Lagos)"}', stderr="")
+        with mock.patch.object(llm.subprocess, "run", return_value=fake):
+            with self.assertRaises(llm.LLMLimit):
+                llm._claude_cli("hi")

@@ -7,13 +7,19 @@ from django.utils import timezone
 from ..models import AgentConfig, Lead, Message, log
 from . import discovery, gigs, inbox, mailer, research, writer
 from .discovery import OverpassBusy
-from .llm import LLMError
+from .llm import LLMError, LLMLimit
 from .mailer import MailConfigError
 
 
 def _step(name, fn):
     try:
         return fn()
+    except LLMLimit as exc:
+        config = AgentConfig.get()
+        config.claude_paused_until = exc.resets_at
+        config.save(update_fields=["claude_paused_until"])
+        when = timezone.localtime(exc.resets_at).strftime("%a %H:%M") if exc.resets_at else "later"
+        log(f"{name}: Claude usage limit reached. Claude work pauses until {when}; finding emails carries on.", "error")
     except OverpassBusy as exc:
         log(f"{name}: {exc}", "warning")
     except (LLMError, MailConfigError) as exc:
@@ -102,26 +108,44 @@ def maybe_discover(config):
     return found
 
 
+def claude_available(config=None) -> bool:
+    """False while a Claude usage limit is in force (so we don't hammer it every check-in)."""
+    config = config or AgentConfig.get()
+    until = config.claude_paused_until
+    if until and until > timezone.now():
+        return False
+    if until:
+        config.claude_paused_until = None
+        config.save(update_fields=["claude_paused_until"])
+    return True
+
+
 def tick(finding: bool = True) -> dict:
     """One check-in. With finding=False, searching and website scanning are left to the separate
     fast email finder (see services/finder.py) and this only does inbox, sending and Claude work."""
     config = AgentConfig.get()
     if not config.agent_enabled:
         return {"paused": True}
+    claude_ok = claude_available(config)
     results = {
         "replies": _step("Checking inbox", inbox.check_inbox),
         "sent": _step("Sending approved emails", lambda: mailer.send_approved(config)),
-        "followups": _step("Drafting follow-ups", lambda: queue_followups(config)),
     }
+    if claude_ok:
+        results["followups"] = _step("Drafting follow-ups", lambda: queue_followups(config))
     if finding:
         results["discovered"] = _step("Finding businesses", lambda: maybe_discover(config))
         results["emails_found"] = _step("Scanning websites for contacts", lambda: research.scan_contacts(config))
-    results.update({
-        "researched": _step("Researching leads", lambda: research_batch(config)),
-        "drafted": _step("Drafting emails", lambda: draft_batch(config)),
-        "messages": _step("Writing direct messages", lambda: whatsapp_batch(config)),
-        "gigs": _step("Finding gigs", lambda: gigs.find_gigs(config)),
-    })
+    if claude_ok:
+        results["researched"] = _step("Researching leads", lambda: research_batch(config))
+        if claude_available():
+            results["drafted"] = _step("Drafting emails", lambda: draft_batch(config))
+        if claude_available():
+            results["messages"] = _step("Writing direct messages", lambda: whatsapp_batch(config))
+    else:
+        log(f"Claude usage limit: research and drafting wait until "
+            f"{timezone.localtime(config.claude_paused_until).strftime('%a %H:%M')}. Emails are still being found.", "warning")
+    results["gigs"] = _step("Finding gigs", lambda: gigs.find_gigs(config))
     summary = ", ".join(f"{k} {v}" for k, v in results.items() if v)
     log(f"Agent check-in done — {summary or 'nothing needed doing'}.")
     return results

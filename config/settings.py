@@ -148,6 +148,8 @@ IMAP_HOST = os.getenv('IMAP_HOST', 'imap.gmail.com')
 LLM_BACKEND = os.getenv('LLM_BACKEND', 'claude_cli')
 CLAUDE_BIN = os.getenv('CLAUDE_BIN', 'claude')
 LLM_MODEL = os.getenv('LLM_MODEL', '')  # optional, e.g. claude-sonnet-5-5
+# Cheaper model for sorting leads, gigs and replies (saves your weekly Claude limit). Emails still use LLM_MODEL.
+RESEARCH_MODEL = os.getenv('RESEARCH_MODEL', 'haiku')
 LLM_TIMEOUT_SECONDS = int(os.getenv('LLM_TIMEOUT_SECONDS', '240'))
 
 AGENT_INTERVAL_MINUTES = int(os.getenv('AGENT_INTERVAL_MINUTES', '15'))

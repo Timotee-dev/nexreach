@@ -97,7 +97,7 @@ def handle_bounce(text: str) -> int:
 
 def classify(lead: Lead, text: str) -> dict:
     ours = lead.messages.filter(direction=Message.Direction.OUT, status=Message.Status.SENT).order_by("-sent_at").first()
-    data = llm.ask_json(CLASSIFY_PROMPT.format(ours=ours.body[:1500] if ours else "(none)", theirs=text[:3000]))
+    data = llm.ask_json(CLASSIFY_PROMPT.format(ours=ours.body[:1500] if ours else "(none)", theirs=text[:3000]), llm.cheap())
     category = str(data.get("category", "other")).strip().lower()
     if category not in {"interested", "question", "not_interested", "unsubscribe", "out_of_office", "other"}:
         category = "other"

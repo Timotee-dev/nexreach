@@ -17,11 +17,56 @@ class LLMError(Exception):
     pass
 
 
-def _claude_cli(prompt: str) -> str:
+class LLMLimit(LLMError):
+    """Claude usage limit reached; `resets_at` is when it comes back (or None if unknown)."""
+
+    def __init__(self, message, resets_at=None):
+        super().__init__(message)
+        self.resets_at = resets_at
+
+
+LIMIT_RE = re.compile(r"hit your (?:\w+ )?limit|usage limit|limit reached", re.I)
+RESET_RE = re.compile(r"resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?", re.I)
+
+
+def reset_time(text: str):
+    """Turn 'resets 12am (Africa/Lagos)' into the next matching moment. Unknown -> 1 hour from now."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from django.utils import timezone
+
+    now = timezone.now()
+    m = RESET_RE.search(text or "")
+    if not m:
+        return now + timedelta(hours=1)
+    hour, minute, ampm, tzname = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower(), m.group(4)
+    if ampm == "am" and hour == 12:
+        hour = 0
+    elif ampm == "pm" and hour != 12:
+        hour += 12
+    try:
+        tz = ZoneInfo(tzname) if tzname else ZoneInfo(settings.TIME_ZONE)
+    except Exception:
+        tz = ZoneInfo(settings.TIME_ZONE)
+    local = now.astimezone(tz)
+    target = local.replace(hour=hour % 24, minute=minute, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return target + timedelta(minutes=2)
+
+
+def _fail(text: str):
+    if LIMIT_RE.search(text or ""):
+        raise LLMLimit(f"Claude usage limit reached: {text[:300]}", reset_time(text))
+    raise LLMError(text)
+
+
+def _claude_cli(prompt: str, model: str = "") -> str:
     binary = shutil.which(settings.CLAUDE_BIN) or settings.CLAUDE_BIN
     cmd = [binary, "-p", prompt, "--output-format", "json"]
-    if settings.LLM_MODEL:
-        cmd += ["--model", settings.LLM_MODEL]
+    model = model or settings.LLM_MODEL
+    if model:
+        cmd += ["--model", model]
     # Run from an empty temp folder so Claude Code doesn't load your project files.
     with tempfile.TemporaryDirectory() as workdir:
         try:
@@ -44,14 +89,14 @@ def _claude_cli(prompt: str) -> str:
 
     out = (proc.stdout or "").strip()
     if proc.returncode != 0 and not out:
-        raise LLMError(f"Claude Code exited with {proc.returncode}: {(proc.stderr or '').strip()[:500]}")
+        _fail(f"Claude Code exited with {proc.returncode}: {(proc.stderr or '').strip()[:500]}")
     try:
         data = json.loads(out)
     except json.JSONDecodeError:
         return out  # plain text output
     if isinstance(data, dict):
         if data.get("is_error"):
-            raise LLMError(f"Claude Code error: {str(data.get('result'))[:500]}")
+            _fail(f"Claude Code error: {str(data.get('result'))[:500]}")
         return str(data.get("result", ""))
     return out
 
@@ -70,10 +115,10 @@ def _api(prompt: str) -> str:
     return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
 
 
-def ask(prompt: str) -> str:
+def ask(prompt: str, model: str = "") -> str:
     if settings.LLM_BACKEND == "api":
         return _api(prompt)
-    return _claude_cli(prompt)
+    return _claude_cli(prompt, model)
 
 
 def extract_json(text: str) -> dict:
@@ -92,9 +137,14 @@ def extract_json(text: str) -> dict:
         raise LLMError(f"Claude returned invalid JSON: {candidate[:300]}") from exc
 
 
-def ask_json(prompt: str) -> dict:
+def ask_json(prompt: str, model: str = "") -> dict:
+    """model='' uses LLM_MODEL (emails). Pass settings.RESEARCH_MODEL for cheap sorting work."""
     prompt = (
         prompt.strip()
         + "\n\nReply with ONE JSON object only — no markdown, no explanation. Do not use any tools."
     )
-    return extract_json(ask(prompt))
+    return extract_json(ask(prompt, model))
+
+
+def cheap() -> str:
+    return getattr(settings, "RESEARCH_MODEL", "") or ""

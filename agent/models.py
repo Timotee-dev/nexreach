@@ -89,6 +89,7 @@ class AgentConfig(models.Model):
     """Single row holding everything the agent needs to know about you."""
 
     agent_enabled = models.BooleanField(default=True, help_text="Untick to pause the agent loop.")
+    claude_paused_until = models.DateTimeField(null=True, blank=True, help_text="Set automatically when your Claude usage limit is reached; Claude work waits until then.")
 
     # Who you are
     sender_name = models.CharField(max_length=100, default="Nexora")
