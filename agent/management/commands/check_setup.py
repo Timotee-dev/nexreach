@@ -28,16 +28,19 @@ class Command(BaseCommand):
         if not settings.GMAIL_ADDRESS or not settings.GMAIL_APP_PASSWORD:
             self.bad("GMAIL_ADDRESS / GMAIL_APP_PASSWORD missing from .env")
             return
-        try:
-            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30) as smtp:
-                smtp.login(settings.GMAIL_ADDRESS, settings.GMAIL_APP_PASSWORD)
-            self.ok("can log in to send (SMTP)")
-        except Exception as exc:
-            self.bad(f"SMTP login: {exc}")
-        try:
-            imap = imaplib.IMAP4_SSL(settings.IMAP_HOST)
-            imap.login(settings.GMAIL_ADDRESS, settings.GMAIL_APP_PASSWORD)
-            imap.logout()
-            self.ok("can read inbox (IMAP)")
-        except Exception as exc:
-            self.bad(f"IMAP login: {exc}")
+        from agent.services.mailer import accounts
+        for address, password in accounts():
+            self.stdout.write(f"  {address}")
+            try:
+                with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30) as smtp:
+                    smtp.login(address, password)
+                self.ok("can log in to send (SMTP)")
+            except Exception as exc:
+                self.bad(f"SMTP login: {exc}")
+            try:
+                imap = imaplib.IMAP4_SSL(settings.IMAP_HOST)
+                imap.login(address, password)
+                imap.logout()
+                self.ok("can read inbox (IMAP)")
+            except Exception as exc:
+                self.bad(f"IMAP login: {exc}")

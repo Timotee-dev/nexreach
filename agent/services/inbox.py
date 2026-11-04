@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from ..models import Lead, Message, Suppression, log
 from . import llm, writer
-from .mailer import check_config
+from .mailer import accounts, check_config
 
 BOUNCE_SENDERS = ("mailer-daemon", "postmaster")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -173,12 +173,25 @@ def process_raw(raw: bytes) -> str | None:
 
 
 def check_inbox(days: int = 7) -> int:
+    """Read every sending inbox (replies arrive at whichever one sent the email)."""
     check_config()
+    handled = 0
+    for address, password in accounts():
+        try:
+            handled += _check_one(address, password, days)
+        except imaplib.IMAP4.error as exc:
+            if address == settings.GMAIL_ADDRESS:
+                raise
+            log(f"Couldn't read the inbox {address}: {exc}", "error")
+    return handled
+
+
+def _check_one(address: str, password: str, days: int) -> int:
     since = (timezone.now() - timedelta(days=days)).strftime("%d-%b-%Y")
     handled = 0
     imap = imaplib.IMAP4_SSL(settings.IMAP_HOST)
     try:
-        imap.login(settings.GMAIL_ADDRESS, settings.GMAIL_APP_PASSWORD)
+        imap.login(address, password)
         imap.select("INBOX", readonly=True)
         status, data = imap.search(None, f"(SINCE {since})")
         if status != "OK":

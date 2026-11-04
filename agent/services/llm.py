@@ -61,12 +61,22 @@ def _fail(text: str):
     raise LLMError(text)
 
 
+LEAN_SYSTEM = "You write and assess business outreach for a small software studio. Answer with exactly what is asked."
+LEAN_FLAGS = ["--system-prompt", LEAN_SYSTEM, "--tools", "", "--strict-mcp-config", "--no-session-persistence"]
+_LEAN = {"on": True}
+
+
 def _claude_cli(prompt: str, model: str = "") -> str:
     binary = shutil.which(settings.CLAUDE_BIN) or settings.CLAUDE_BIN
     cmd = [binary, "-p", prompt, "--output-format", "json"]
     model = model or settings.LLM_MODEL
     if model:
         cmd += ["--model", model]
+    lean = _LEAN["on"] and getattr(settings, "CLAUDE_LEAN", True)
+    if lean:
+        # Claude Code normally sends its whole coding-assistant instructions and tool list with every
+        # request. NexReach needs none of that, so swap in one short line: far less of your limit per email.
+        cmd += LEAN_FLAGS
     # Run from an empty temp folder so Claude Code doesn't load your project files.
     with tempfile.TemporaryDirectory() as workdir:
         try:
@@ -88,6 +98,9 @@ def _claude_cli(prompt: str, model: str = "") -> str:
             raise LLMError("Claude took too long to answer.") from exc
 
     out = (proc.stdout or "").strip()
+    if lean and proc.returncode != 0 and re.search(r"unknown option|unrecognized|invalid option", proc.stderr or "", re.I):
+        _LEAN["on"] = False  # older Claude Code: fall back to the normal mode
+        return _claude_cli(prompt, model)
     if proc.returncode != 0 and not out:
         _fail(f"Claude Code exited with {proc.returncode}: {(proc.stderr or '').strip()[:500]}")
     try:

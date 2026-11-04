@@ -12,6 +12,7 @@ from .forms import ConfigForm, LeadContactForm, LeadForm
 from .models import Activity, AgentConfig, Lead, Market, Message, Suppression, is_agency, log
 from .services import gigs as gig_service, research, writer
 from .services.llm import LLMError, LLMLimit
+from .services import mailer
 from .services.mailer import sent_today
 
 
@@ -39,6 +40,8 @@ def dashboard(request):
         "config": config,
         "funnel": [(label, n, round(n * 100 / top)) for label, n in funnel],
         "sent_today": sent_today(),
+        "send_capacity": mailer.capacity(config),
+        "inbox_count": len(mailer.accounts()),
         "pending": Message.objects.filter(status=Message.Status.DRAFT).select_related("lead")[:5],
         "approved_count": Message.objects.filter(status=Message.Status.APPROVED).count(),
         "hot_leads": Lead.objects.filter(status__in=[Lead.Status.INTERESTED, Lead.Status.REPLIED])[:6],

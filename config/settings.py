@@ -140,6 +140,15 @@ LOGIN_URL = '/admin/login/'
 # ---- NexReach settings (read from .env) ----
 GMAIL_ADDRESS = os.getenv('GMAIL_ADDRESS', '')
 GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD', '').replace(' ', '')
+# Extra sending inboxes (optional): GMAIL_ADDRESS_2 / GMAIL_APP_PASSWORD_2, _3, _4, _5.
+# Each one sends its own daily limit, so 3 inboxes = 3x the emails. New ones warm up slowly.
+EXTRA_GMAIL_ACCOUNTS = [
+    (os.getenv(f'GMAIL_ADDRESS_{n}', '').strip(), os.getenv(f'GMAIL_APP_PASSWORD_{n}', '').replace(' ', ''))
+    for n in range(2, 6)
+    if os.getenv(f'GMAIL_ADDRESS_{n}', '').strip() and os.getenv(f'GMAIL_APP_PASSWORD_{n}', '').strip()
+]
+WARMUP_START = int(os.getenv('WARMUP_START', '10'))       # a new inbox's first-day limit
+WARMUP_STEP = int(os.getenv('WARMUP_STEP', '3'))          # extra emails allowed per day after that
 SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', '465'))
 IMAP_HOST = os.getenv('IMAP_HOST', 'imap.gmail.com')
@@ -150,6 +159,8 @@ CLAUDE_BIN = os.getenv('CLAUDE_BIN', 'claude')
 LLM_MODEL = os.getenv('LLM_MODEL', '')  # optional, e.g. claude-sonnet-5-5
 # Cheaper model for sorting leads, gigs and replies (saves your weekly Claude limit). Emails still use LLM_MODEL.
 RESEARCH_MODEL = os.getenv('RESEARCH_MODEL', 'haiku')
+# Send Claude a short instruction instead of Claude Code's full one (uses much less of your limit).
+CLAUDE_LEAN = os.getenv('CLAUDE_LEAN', '1') != '0'
 LLM_TIMEOUT_SECONDS = int(os.getenv('LLM_TIMEOUT_SECONDS', '240'))
 
 AGENT_INTERVAL_MINUTES = int(os.getenv('AGENT_INTERVAL_MINUTES', '15'))

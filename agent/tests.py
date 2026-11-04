@@ -4,6 +4,7 @@ from email.message import EmailMessage
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.db.models import Count
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -1542,3 +1543,70 @@ class AgencyTests(TestCase):
         with mock.patch.object(writer.llm, "ask_json", side_effect=fake):
             writer.draft_initial(other)
         self.assertNotIn("white-label", seen["p"])
+
+
+@override_settings(**GMAIL, EXTRA_GMAIL_ACCOUNTS=[("two@gmail.com", "pw2"), ("three@gmail.com", "pw3")],
+                   WARMUP_START=10, WARMUP_STEP=3)
+class MultiInboxTests(TestCase):
+    def _approved(self, n, **lead_kw):
+        msgs = []
+        for i in range(n):
+            lead = Lead.objects.create(name=f"B{i}{lead_kw.get('tag','')}", email=f"b{i}{lead_kw.get('tag','')}@x.com", status="drafted")
+            msgs.append(Message.objects.create(lead=lead, direction="out", kind="initial", status="approved", subject="s", body="b"))
+        return msgs
+
+    @mock.patch("agent.models.AgentConfig.within_send_window", return_value=True)
+    @mock.patch("agent.services.mailer.smtplib.SMTP_SSL")
+    def test_spreads_across_inboxes_with_warmup(self, smtp, _):
+        config = AgentConfig.get(); config.daily_send_limit = 25; config.sends_per_tick = 50; config.save()
+        self._approved(60)
+        self.assertEqual(mailer.capacity(config), 25 + 10 + 10)
+        self.assertEqual(mailer.send_approved(config), 45)
+        senders = dict(Message.objects.filter(status="sent").values_list("sender").annotate(n=Count("id")))
+        self.assertEqual(senders, {"me@gmail.com": 25, "two@gmail.com": 10, "three@gmail.com": 10})
+
+    @mock.patch("agent.models.AgentConfig.within_send_window", return_value=True)
+    @mock.patch("agent.services.mailer.smtplib.SMTP_SSL")
+    def test_followup_goes_from_same_inbox(self, smtp, _):
+        lead = Lead.objects.create(name="T", email="t@x.com", status="contacted")
+        Message.objects.create(lead=lead, direction="out", kind="initial", status="sent", sender="three@gmail.com",
+                               sent_at=timezone.now() - timedelta(days=5), subject="s", body="b")
+        follow = Message.objects.create(lead=lead, direction="out", kind="followup", status="approved", subject="Re: s", body="f")
+        mailer.send_approved(AgentConfig.get())
+        follow.refresh_from_db()
+        self.assertEqual(follow.sender, "three@gmail.com")
+
+    def test_warmup_grows_daily(self):
+        lead = Lead.objects.create(name="W", email="w@x.com")
+        Message.objects.create(lead=lead, direction="out", kind="initial", status="sent", sender="two@gmail.com",
+                               sent_at=timezone.now() - timedelta(days=4), subject="s", body="b")
+        config = AgentConfig.get(); config.daily_send_limit = 40
+        self.assertEqual(mailer.limit_for("two@gmail.com", config), 22)
+        self.assertEqual(mailer.limit_for("me@gmail.com", config), 40)
+
+
+class LeanClaudeTests(TestCase):
+    def _run(self, **kw):
+        fake = mock.Mock(returncode=0, stdout='{"result": "{}"}', stderr="")
+        with mock.patch.object(llm.subprocess, "run", return_value=fake) as run:
+            llm._claude_cli("hi")
+        return run.call_args[0][0]
+
+    def test_lean_flags_used_by_default(self):
+        llm._LEAN["on"] = True
+        cmd = self._run()
+        self.assertIn("--system-prompt", cmd)
+        self.assertIn("--tools", cmd)
+
+    @override_settings(CLAUDE_LEAN=False)
+    def test_can_switch_off(self):
+        self.assertNotIn("--system-prompt", self._run())
+
+    def test_falls_back_if_cli_rejects_flags(self):
+        llm._LEAN["on"] = True
+        bad = mock.Mock(returncode=1, stdout="", stderr="error: unknown option '--tools'")
+        good = mock.Mock(returncode=0, stdout='{"result": "ok"}', stderr="")
+        with mock.patch.object(llm.subprocess, "run", side_effect=[bad, good]) as run:
+            self.assertEqual(llm._claude_cli("hi"), "ok")
+        self.assertNotIn("--system-prompt", run.call_args_list[1][0][0])
+        llm._LEAN["on"] = True

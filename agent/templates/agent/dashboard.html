@@ -18,7 +18,7 @@
   <div class="card stat"><div class="n">{% if per_search is not None %}{{ per_search }}{% else %}—{% endif %}<span class="muted" style="font-size:16px"> / {{ config.min_emails_per_search }}</span></div><div class="l">Avg emails per search (last 20)</div></div>
   <div class="card stat"><div class="n">{{ pending_count }}</div><div class="l">Waiting for your approval</div></div>
   <div class="card stat"><div class="n">{{ approved_count }}</div><div class="l">Approved, sending next check-in</div></div>
-  <div class="card stat"><div class="n">{{ sent_today }}<span class="muted" style="font-size:16px"> / {{ config.daily_send_limit }}</span></div><div class="l">Cold emails sent today</div></div>
+  <div class="card stat"><div class="n">{{ sent_today }}<span class="muted" style="font-size:16px"> / {{ send_capacity }}</span></div><div class="l">Cold emails sent today{% if inbox_count > 1 %} ({{ inbox_count }} inboxes){% endif %}</div></div>
   <div class="card stat"><div class="n">{{ call_list_count }}</div><div class="l"><a href="{% url 'call_list' %}">To message directly</a></div></div>
 </div>
 

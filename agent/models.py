@@ -125,7 +125,7 @@ class AgentConfig(models.Model):
     discovery_cursor = models.PositiveIntegerField(default=0)
 
     # Limits
-    daily_send_limit = models.PositiveIntegerField(default=20)
+    daily_send_limit = models.PositiveIntegerField(default=20, help_text="Cold emails per day PER INBOX. With 3 inboxes, 25 here means up to 75 a day.")
     sends_per_tick = models.PositiveIntegerField(default=5)
     research_per_tick = models.PositiveIntegerField(default=16, help_text="Businesses researched per check-in (8 per Claude call).")
     drafts_per_tick = models.PositiveIntegerField(default=5)
@@ -447,6 +447,7 @@ class Message(models.Model):
     body = models.TextField(blank=True)
 
     message_id = models.CharField(max_length=300, blank=True, db_index=True)
+    sender = models.CharField(max_length=254, blank=True, help_text="Which of your inboxes sent it.")
     in_reply_to = models.CharField(max_length=300, blank=True)
     classification = models.CharField(max_length=30, blank=True)
     summary = models.TextField(blank=True)

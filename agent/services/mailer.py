@@ -18,6 +18,48 @@ def check_config():
         raise MailConfigError("Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your .env file.")
 
 
+def accounts() -> list[tuple[str, str]]:
+    """Your sending inboxes: the main one first, then any GMAIL_ADDRESS_2.. from .env."""
+    main = [(settings.GMAIL_ADDRESS, settings.GMAIL_APP_PASSWORD)] if settings.GMAIL_ADDRESS else []
+    extra = [a for a in getattr(settings, "EXTRA_GMAIL_ACCOUNTS", []) if a[0].lower() != settings.GMAIL_ADDRESS.lower()]
+    return main + extra
+
+
+def _day_start():
+    return timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def sent_today_by(address: str) -> int:
+    qs = Message.objects.filter(direction=Message.Direction.OUT, status=Message.Status.SENT, sent_at__gte=_day_start())
+    qs = qs.exclude(kind=Message.Kind.REPLY)
+    if address.lower() == settings.GMAIL_ADDRESS.lower():
+        return qs.filter(sender__in=["", address]).count()  # older emails have no sender recorded
+    return qs.filter(sender__iexact=address).count()
+
+
+def limit_for(address: str, config: AgentConfig) -> int:
+    """Main inbox: your daily limit. Extra inboxes warm up: 10 on day one, +3 a day, up to the limit."""
+    if address.lower() == settings.GMAIL_ADDRESS.lower():
+        return config.daily_send_limit
+    first = (Message.objects.filter(direction=Message.Direction.OUT, status=Message.Status.SENT, sender__iexact=address)
+             .order_by("sent_at").values_list("sent_at", flat=True).first())
+    days = (timezone.localdate() - timezone.localtime(first).date()).days if first else 0
+    return min(config.daily_send_limit, settings.WARMUP_START + settings.WARMUP_STEP * days)
+
+
+def capacity(config: AgentConfig) -> int:
+    return sum(limit_for(a, config) for a, _ in accounts()) or config.daily_send_limit
+
+
+def thread_sender(lead: Lead) -> str:
+    """Follow-ups and replies go from the inbox that first wrote to them."""
+    prev = (lead.messages.filter(direction=Message.Direction.OUT, status=Message.Status.SENT)
+            .order_by("sent_at").values_list("sender", flat=True).first())
+    if prev is None:
+        return ""
+    return prev or settings.GMAIL_ADDRESS
+
+
 def _log_once(text: str, minutes: int = 120, level: str = "warning"):
     """Warn without filling Activity with the same line every check-in."""
     from datetime import timedelta
@@ -27,19 +69,19 @@ def _log_once(text: str, minutes: int = 120, level: str = "warning"):
 
 
 def sent_today() -> int:
-    start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
-    return Message.objects.filter(direction=Message.Direction.OUT, status=Message.Status.SENT, sent_at__gte=start).count()
+    return Message.objects.filter(direction=Message.Direction.OUT, status=Message.Status.SENT, sent_at__gte=_day_start()).count()
 
 
-def build(message: Message, config: AgentConfig) -> EmailMessage:
-    domain = settings.GMAIL_ADDRESS.split("@")[-1] or "localhost"
+def build(message: Message, config: AgentConfig, address: str = "") -> EmailMessage:
+    address = address or settings.GMAIL_ADDRESS
+    domain = address.split("@")[-1] or "localhost"
     em = EmailMessage()
-    em["From"] = formataddr((f"{config.sender_name} from {config.company_name}", settings.GMAIL_ADDRESS))
+    em["From"] = formataddr((f"{config.sender_name} from {config.company_name}", address))
     em["To"] = message.lead.email
     em["Subject"] = message.subject
     em["Message-ID"] = make_msgid(domain=domain)
     # Lets Gmail/Outlook show a one-click "Unsubscribe" — good for deliverability and required by bulk-sender rules.
-    em["List-Unsubscribe"] = f"<mailto:{settings.GMAIL_ADDRESS}?subject=unsubscribe>"
+    em["List-Unsubscribe"] = f"<mailto:{address}?subject=unsubscribe>"
     if message.in_reply_to:
         em["In-Reply-To"] = message.in_reply_to
         em["References"] = message.in_reply_to
@@ -47,7 +89,7 @@ def build(message: Message, config: AgentConfig) -> EmailMessage:
     return em
 
 
-def send_message(message: Message, config: AgentConfig | None = None, smtp=None) -> bool:
+def send_message(message: Message, config: AgentConfig | None = None, smtp=None, address: str = "") -> bool:
     config = config or AgentConfig.get()
     lead = message.lead
     if message.status != Message.Status.APPROVED:
@@ -62,7 +104,8 @@ def send_message(message: Message, config: AgentConfig | None = None, smtp=None)
         log(f"Skipped {lead.name}: on the do-not-contact list.", "warning", lead=lead)
         return False
 
-    em = build(message, config)
+    address = address or settings.GMAIL_ADDRESS
+    em = build(message, config, address)
     try:
         smtp.send_message(em)
     except smtplib.SMTPException as exc:
@@ -73,7 +116,8 @@ def send_message(message: Message, config: AgentConfig | None = None, smtp=None)
 
     now = timezone.now()
     message.status, message.message_id, message.sent_at, message.error = Message.Status.SENT, em["Message-ID"], now, ""
-    message.save(update_fields=["status", "message_id", "sent_at", "error"])
+    message.sender = address
+    message.save(update_fields=["status", "message_id", "sent_at", "error", "sender"])
 
     lead.last_contacted_at = now
     if message.kind == Message.Kind.FOLLOWUP:
@@ -83,7 +127,8 @@ def send_message(message: Message, config: AgentConfig | None = None, smtp=None)
     }:
         lead.status = Lead.Status.CONTACTED
     lead.save()
-    log(f"Sent {message.get_kind_display().lower()} to {lead.name} <{lead.email}>.", "success", lead=lead)
+    via = f" from {address}" if len(accounts()) > 1 else ""
+    log(f"Sent {message.get_kind_display().lower()} to {lead.name} <{lead.email}>{via}.", "success", lead=lead)
     return True
 
 
@@ -121,20 +166,42 @@ def send_approved(config: AgentConfig | None = None) -> int:
         return 0
     check_config()
 
-    room = max(0, config.daily_send_limit - sent_today())
-    sent = 0
-    cold_sent = 0
+    inboxes = accounts()
+    room = {a: max(0, limit_for(a, config) - sent_today_by(a)) for a, _ in inboxes}
+    # Who sends what: a thread stays on its inbox; new cold emails go to the inbox with the most room left.
+    plan = {a: [] for a, _ in inboxes}
+    per_tick = {a: 0 for a, _ in inboxes}
     limit_hit = False
-    with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=60) as smtp:
-        smtp.login(settings.GMAIL_ADDRESS, settings.GMAIL_APP_PASSWORD)
-        for message in ready:
-            is_cold = message.kind != Message.Kind.REPLY
-            if is_cold and (cold_sent >= room or cold_sent >= config.sends_per_tick):
-                limit_hit = limit_hit or cold_sent >= room
-                continue
-            if send_message(message, config, smtp=smtp):
-                sent += 1
-                cold_sent += int(is_cold)
+    for message in ready:
+        is_cold = message.kind != Message.Kind.REPLY
+        owner = thread_sender(message.lead)
+        if owner and owner not in plan:
+            owner = inboxes[0][0]  # that inbox was removed from .env; carry on from the main one
+        if not is_cold:
+            plan[owner or inboxes[0][0]].append(message)
+            continue
+        choices = [owner] if owner else sorted(plan, key=lambda a: -(room[a] - per_tick[a]))
+        target = next((a for a in choices if per_tick[a] < room[a] and per_tick[a] < config.sends_per_tick), None)
+        if target is None:
+            limit_hit = limit_hit or all(per_tick[a] >= room[a] for a in plan)
+            continue
+        plan[target].append(message)
+        per_tick[target] += 1
+
+    sent = 0
+    for address, password in inboxes:
+        if not plan[address]:
+            continue
+        try:
+            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=60) as smtp:
+                smtp.login(address, password)
+                for message in plan[address]:
+                    if send_message(message, config, smtp=smtp, address=address):
+                        sent += 1
+        except smtplib.SMTPAuthenticationError as exc:
+            if address == settings.GMAIL_ADDRESS:
+                raise
+            _log_once(f"Couldn't log in to {address} (check its App Password in .env): {exc}", level="error")
     if limit_hit:
-        _log_once(f"Daily limit of {config.daily_send_limit} cold emails reached; the rest wait for tomorrow.", level="info")
+        _log_once(f"Today's limit of {capacity(config)} cold emails reached; the rest wait for tomorrow.", level="info")
     return sent
