@@ -71,8 +71,13 @@ def draft_batch(config):
         .order_by("-fit_score", "created_at")[: config.drafts_per_tick]
     )
     for lead in leads:
-        writer.draft_initial(lead, config)
-        count += 1
+        try:
+            writer.draft_initial(lead, config)
+            count += 1
+        except LLMLimit:
+            raise
+        except LLMError as exc:  # one bad answer shouldn't stop the other drafts
+            log(f"Couldn't draft for {lead.name}, will retry next time: {str(exc)[:150]}", "warning", lead=lead)
     return count
 
 

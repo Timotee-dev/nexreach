@@ -128,13 +128,42 @@ def extract_json(text: str) -> dict:
     if candidate is None:
         start = text.find("{")
         end = text.rfind("}")
+        if start != -1 and end <= start:
+            repaired = _lenient_flat(text[start:])  # reply was cut off before the closing }
+            if repaired:
+                return repaired
         if start == -1 or end <= start:
             raise LLMError(f"Expected JSON from Claude, got: {text[:300]}")
         candidate = text[start : end + 1]
     try:
-        return json.loads(candidate)
+        return json.loads(candidate, strict=False)  # strict=False allows raw line breaks inside text
     except json.JSONDecodeError as exc:
+        repaired = _lenient_flat(text[text.find("{"):])
+        if repaired:
+            return repaired
         raise LLMError(f"Claude returned invalid JSON: {candidate[:300]}") from exc
+
+
+KEY_RE = re.compile(r'(?:^\s*\{|,)\s*"(\w+)"\s*:\s*"')
+
+
+def _lenient_flat(text: str) -> dict:
+    """Rescue a simple {"subject": "...", "body": "..."} reply that has unescaped quotes inside the text,
+    or was cut off at the end. Only for objects whose values are all text."""
+    keys = list(KEY_RE.finditer(text))
+    if not keys:
+        return {}
+    out = {}
+    for n, m in enumerate(keys):
+        end = keys[n + 1].start() if n + 1 < len(keys) else len(text)
+        raw = text[m.end():end].rstrip()
+        raw = re.sub(r'"?\s*\}?\s*(```)?\s*$', "", raw) if n + 1 == len(keys) else re.sub(r'"\s*$', "", raw)
+        raw = re.sub(r'(?<!\\)"', '\\"', raw)
+        try:
+            out[m.group(1)] = json.loads(f'"{raw}"', strict=False)
+        except json.JSONDecodeError:
+            out[m.group(1)] = raw.replace("\\n", "\n").replace('\\"', '"')
+    return out
 
 
 def ask_json(prompt: str, model: str = "") -> dict:

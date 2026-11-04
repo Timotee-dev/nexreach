@@ -292,8 +292,14 @@ Problems we detected: {signals}
 Website text (truncated):
 {text}
 
-Decide how good a fit this business is (0-100) for what we sell. Score higher when there is a
-clear, specific problem we can solve. Only use facts given above — never invent details.
+Decide how good a fit this business is (0-100) for what we sell, using this scale:
+- 70-90: an independent business in a sector that pays well, with a clear problem we can fix
+  (slow or outdated website, no online booking, broken pages, no website, weak mobile site).
+- 60-69: independent business in a good sector, problem less clear but our offer would still help.
+- 40-59: probably already well served (modern site, booking and good speed) or a weak sector.
+- under 30: chains, franchises, hospitals, large companies, government, or not a business.
+A single practice or shop with a detected problem should normally score 65 or more.
+Only use facts given above — never invent details.
 
 JSON fields:
 - "fit_score": integer 0-100
@@ -341,9 +347,15 @@ WHAT WE SELL
 IDEAL CUSTOMER
 {icp}
 
-Below are {n} businesses. For EACH one, decide how good a fit it is (0-100) for what we sell. Score
-higher when there is a clear, specific problem we can solve. Score low for chains, franchises, large
-companies and businesses that already have modern systems. Only use the facts given; never invent details.
+Below are {n} businesses. For EACH one, decide how good a fit it is (0-100) for what we sell.
+Use this scale:
+- 70-90: an independent business in a sector that pays well, with a clear problem we can fix
+  (slow or outdated website, no online booking, broken pages, no website, weak mobile site).
+- 60-69: independent business in a good sector, problem less clear but our offer would still help.
+- 40-59: probably already well served (modern site, booking and good speed) or a weak sector.
+- under 30: chains, franchises, hospitals, large companies, government, or not a business.
+A single practice or shop with a detected problem should normally score 65 or more.
+Only use the facts given; never invent details.
 
 {businesses}
 

@@ -1464,3 +1464,32 @@ class ClaudeLimitTests(TestCase):
         with mock.patch.object(llm.subprocess, "run", return_value=fake):
             with self.assertRaises(llm.LLMLimit):
                 llm._claude_cli("hi")
+
+
+class LenientJsonTests(TestCase):
+    def test_unescaped_quotes_and_newlines_are_rescued(self):
+        from agent.services import llm
+        raw = '{"subject": "uw website laadt erg traag", "body": "Goedendag,\n\nDe "afspraken" pagina is traag.\n\nGroet"}'
+        data = llm.extract_json(raw)
+        self.assertEqual(data["subject"], "uw website laadt erg traag")
+        self.assertIn('"afspraken"', data["body"])
+
+    def test_cut_off_reply_still_gives_subject_and_body(self):
+        from agent.services import llm
+        data = llm.extract_json('{"subject": "Snelle vraag", "body": "Goedendag,\\n\\nBij een controle')
+        self.assertEqual(data["subject"], "Snelle vraag")
+        self.assertTrue(data["body"].startswith("Goedendag"))
+
+    def test_one_bad_draft_does_not_stop_the_rest(self):
+        from unittest import mock
+        from agent.services import loop, writer
+        Lead.objects.create(name="A", email="a@a.nl", status="qualified", fit_score=80)
+        Lead.objects.create(name="B", email="b@b.nl", status="qualified", fit_score=70)
+        calls = []
+        def fake(lead, config):
+            calls.append(lead.name)
+            if lead.name == "A":
+                raise llm.LLMError("bad json")
+        with mock.patch.object(writer, "draft_initial", side_effect=fake):
+            self.assertEqual(loop.draft_batch(AgentConfig.get()), 1)
+        self.assertEqual(calls, ["A", "B"])
