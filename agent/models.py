@@ -45,7 +45,18 @@ HIGH_VALUE_SECTORS = "\n".join([
     "healthcare=physiotherapist", "healthcare=optometrist", "office=property_management", "office=consulting",
     "office=employment_agency", "office=travel_agent", "amenity=school", "amenity=college", "craft=carpenter",
     "shop=jewelry", "shop=furniture", "tourism=guest_house",
+    # Agencies: partners who can pass you white-label website work (2 of 31 sectors, so a small share)
+    "office=advertising_agency", "office=web_design",
 ])
+
+AGENCY_TAGS = ["office=advertising_agency", "office=web_design"]
+AGENCY_WORDS = ("advertising", "marketing agency", "web design", "design agency", "digital agency",
+                "creative agency", "branding")
+
+
+def is_agency(category: str) -> bool:
+    c = (category or "").lower()
+    return any(w in c for w in AGENCY_WORDS)
 
 
 class Market(models.Model):

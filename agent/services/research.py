@@ -298,6 +298,8 @@ Decide how good a fit this business is (0-100) for what we sell, using this scal
 - 60-69: independent business in a good sector, problem less clear but our offer would still help.
 - 40-59: probably already well served (modern site, booking and good speed) or a weak sector.
 - under 30: chains, franchises, hospitals, large companies, government, or not a business.
+- Marketing, advertising and web design agencies are PARTNERS, not website clients: we offer them
+  white-label development. Score a small or mid-sized independent agency 65-80, a huge network under 30.
 A single practice or shop with a detected problem should normally score 65 or more.
 Only use facts given above — never invent details.
 
@@ -354,6 +356,8 @@ Use this scale:
 - 60-69: independent business in a good sector, problem less clear but our offer would still help.
 - 40-59: probably already well served (modern site, booking and good speed) or a weak sector.
 - under 30: chains, franchises, hospitals, large companies, government, or not a business.
+- Marketing, advertising and web design agencies are PARTNERS, not website clients: we offer them
+  white-label development. Score a small or mid-sized independent agency 65-80, a huge network under 30.
 A single practice or shop with a detected problem should normally score 65 or more.
 Only use the facts given; never invent details.
 

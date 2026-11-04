@@ -1,6 +1,6 @@
 """Writes first emails, follow-ups and replies. Everything lands as a DRAFT —
 nothing is sent until you approve it in the dashboard."""
-from ..models import AgentConfig, Lead, Message, log
+from ..models import AgentConfig, Lead, Message, is_agency, log
 from . import llm
 
 COMMON_RULES = """Rules:
@@ -30,6 +30,15 @@ low-pressure question (e.g. whether they'd like a quick idea or a short call). O
 {rules}
 
 JSON fields: "subject" (under 8 words, lowercase is fine, no clickbait), "body".
+"""
+
+
+AGENCY_NOTE = """
+THIS IS AN AGENCY, NOT A NORMAL CLIENT. Don't criticise their website or sell them a website.
+Pitch white-label development instead: we build websites and web apps for agencies like theirs,
+under their brand, so they can take on more client projects without hiring. We stay in the
+background and never contact their clients. Offer a small first project at a friendly price so
+they can judge our quality. Ask if they ever have more build work than their team can handle.
 """
 
 
@@ -117,7 +126,7 @@ def draft_initial(lead: Lead, config: AgentConfig | None = None) -> Message:
             summary=lead.research_summary or "n/a",
             hook=lead.hook or "none",
             signals="; ".join(lead.site_signals or []) or "none",
-            rules=_rules(config, lead=lead),
+            rules=(AGENCY_NOTE if is_agency(lead.category) else "") + _rules(config, lead=lead),
         )
     )
     msg = Message.objects.create(
@@ -150,7 +159,7 @@ def draft_followup(lead: Lead, config: AgentConfig | None = None) -> Message:
             offer=config.offer,
             history=_history(lead),
             final_note="This is the last follow-up: politely say you won't email again." if final else "",
-            rules=_rules(config, words=80, lead=lead),
+            rules=("This is an agency: keep pitching white-label development for their clients, not a website for them.\n" if is_agency(lead.category) else "") + _rules(config, words=80, lead=lead),
         )
     )
     msg = Message.objects.create(

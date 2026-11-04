@@ -46,6 +46,8 @@ TAG_WORDS = {
     "shop=jewelry": "jewelry store",
     "shop=furniture": "furniture store",
     "tourism=guest_house": "guest house",
+    "office=advertising_agency": "marketing agency",
+    "office=web_design": "web design agency",
 }
 
 

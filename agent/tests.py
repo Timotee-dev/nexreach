@@ -1515,3 +1515,30 @@ class DuplicateTests(TestCase):
         reasons = list(Lead.objects.values_list("fit_reason", flat=True))
         self.assertFalse(any(r.startswith("Chain") for r in reasons))
         self.assertEqual(Lead.objects.filter(status="new").count(), 1)
+
+
+class AgencyTests(TestCase):
+    def test_agency_sectors_added_alongside_others(self):
+        tags = AgentConfig.get().categories
+        self.assertIn("office=advertising_agency", tags)
+        self.assertIn("amenity=dentist", tags)
+        self.assertLess(sum(t in ("office=advertising_agency", "office=web_design") for t in tags) / len(tags), 0.1)
+
+    def test_agency_gets_white_label_pitch(self):
+        from agent.models import is_agency
+        self.assertTrue(is_agency("advertising agency"))
+        self.assertTrue(is_agency("web design agency"))
+        self.assertFalse(is_agency("real estate agency"))
+        self.assertFalse(is_agency("travel agency"))
+        lead = Lead.objects.create(name="Pixel Co", email="hi@pixel.co", category="marketing agency", status="qualified")
+        seen = {}
+        def fake(prompt, model=""):
+            seen["p"] = prompt
+            return {"subject": "s", "body": "b"}
+        with mock.patch.object(writer.llm, "ask_json", side_effect=fake):
+            writer.draft_initial(lead)
+        self.assertIn("white-label", seen["p"])
+        other = Lead.objects.create(name="Dent", email="d@d.se", category="dentist", status="qualified")
+        with mock.patch.object(writer.llm, "ask_json", side_effect=fake):
+            writer.draft_initial(other)
+        self.assertNotIn("white-label", seen["p"])

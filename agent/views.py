@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
 from .forms import ConfigForm, LeadContactForm, LeadForm
-from .models import Activity, AgentConfig, Lead, Market, Message, Suppression, log
+from .models import Activity, AgentConfig, Lead, Market, Message, Suppression, is_agency, log
 from .services import gigs as gig_service, research, writer
 from .services.llm import LLMError, LLMLimit
 from .services.mailer import sent_today
@@ -443,6 +443,7 @@ def emails_found(request):
     page = Paginator(qs.order_by(F("email_found_at").desc(nulls_last=True), "-pk"), 50).get_page(request.GET.get("page"))
     for lead in page:
         lead.stage = STATUS_STAGE.get(lead.status, "")
+        lead.agency = is_agency(lead.category)
     return render(request, "agent/emails_found.html", {
         "page": page, "day": day, "stage": stage, "stage_counts": stage_counts,
         "total": sum(n for _, _, n in stage_counts), **_nav_counts(),
