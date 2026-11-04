@@ -1493,3 +1493,25 @@ class LenientJsonTests(TestCase):
         with mock.patch.object(writer, "draft_initial", side_effect=fake):
             self.assertEqual(loop.draft_batch(AgentConfig.get()), 1)
         self.assertEqual(calls, ["A", "B"])
+
+
+class DuplicateTests(TestCase):
+    def test_same_email_gets_one_draft(self):
+        a = Lead.objects.create(name="Clinic", email="info@clinic.se", status="drafted")
+        Message.objects.create(lead=a, direction="out", kind="initial", status="draft", subject="s", body="b")
+        b = Lead.objects.create(name="Clinic", email="INFO@clinic.se", status="drafted")
+        Message.objects.create(lead=b, direction="out", kind="initial", status="draft", subject="s", body="b")
+        c = Lead.objects.create(name="Clinic", email="info@clinic.se", status="new")
+        self.assertEqual(research.mark_duplicates(), 2)
+        self.assertEqual(Message.objects.filter(status="draft").count(), 1)
+        self.assertEqual(Lead.objects.get(pk=a.pk).status, "drafted")
+        for lead in (b, c):
+            self.assertTrue(Lead.objects.get(pk=lead.pk).fit_reason.startswith("Duplicate"))
+
+    def test_duplicates_are_not_counted_as_a_chain(self):
+        for _ in range(3):
+            Lead.objects.create(name="Clinic", email="info@clinic.se")
+        research.mark_chains()
+        reasons = list(Lead.objects.values_list("fit_reason", flat=True))
+        self.assertFalse(any(r.startswith("Chain") for r in reasons))
+        self.assertEqual(Lead.objects.filter(status="new").count(), 1)

@@ -70,7 +70,11 @@ def draft_batch(config):
         .exclude(email="")
         .order_by("-fit_score", "created_at")[: config.drafts_per_tick]
     )
+    research.mark_duplicates()
     for lead in leads:
+        lead.refresh_from_db()
+        if lead.status != Lead.Status.QUALIFIED:
+            continue  # set aside as a duplicate just now
         try:
             writer.draft_initial(lead, config)
             count += 1

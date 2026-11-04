@@ -437,6 +437,45 @@ WEBMAIL = ("gmail.", "googlemail.", "yahoo.", "hotmail.", "outlook.", "live.", "
 CHAIN_MIN = 3
 
 
+ACTIVE = ["qualified", "drafted", "contacted", "replied", "interested", "closed",
+          "not_interested", "unsubscribed", "bounced"]
+RANK = {s: i for i, s in enumerate(ACTIVE)}
+
+
+def mark_duplicates() -> int:
+    """Free: the same business is sometimes found twice (two map sources, or two map entries).
+    Keep one lead per email address and set the copies aside, cancelling any extra drafts."""
+    from django.db.models import Count
+    from django.db.models.functions import Lower
+
+    from ..models import Message
+
+    dupes = (
+        Lead.objects.filter(kind="business").exclude(email="").annotate(addr=Lower("email"))
+        .values("addr").annotate(n=Count("id")).filter(n__gt=1)
+    )
+    marked = 0
+    for row in dupes:
+        leads = list(Lead.objects.filter(kind="business", email__iexact=row["addr"]).order_by("created_at", "pk"))
+        # keep the one furthest along (already sent beats drafted beats new), else the oldest
+        keep = min(leads, key=lambda l: (-(RANK.get(l.status, -1)) if l.status in RANK else 99,
+                                          -l.messages.filter(status__in=["sent", "approved"]).count(), l.pk))
+        for lead in leads:
+            if lead.pk == keep.pk or lead.status == Lead.Status.DISQUALIFIED and lead.fit_reason.startswith("Duplicate"):
+                continue
+            if lead.messages.filter(status=Message.Status.SENT).exists():
+                continue  # never touch history
+            lead.messages.filter(status__in=[Message.Status.DRAFT, Message.Status.APPROVED]).update(
+                status=Message.Status.REJECTED)
+            lead.status = Lead.Status.DISQUALIFIED
+            lead.fit_reason = f"Duplicate of {keep.name} (same email)."
+            lead.save(update_fields=["status", "fit_reason", "updated_at"])
+            marked += 1
+    if marked:
+        log(f"Set aside {marked} duplicate businesses (same email found twice).")
+    return marked
+
+
 def mark_chains(config: AgentConfig | None = None) -> int:
     """Free (no Claude): when 3+ businesses share one email domain, they're branches of a chain or a
     large company. Your ideal customer excludes those, so they're set aside before Claude sees them."""
@@ -446,9 +485,10 @@ def mark_chains(config: AgentConfig | None = None) -> int:
     rows = (
         Lead.objects.filter(kind="business").exclude(email="")
         .annotate(domain=Lower(Substr("email", StrIndex("email", Value("@")) + 1)))
-        .values("domain").annotate(n=Count("id")).filter(n__gte=CHAIN_MIN)
-    )
-    marked = 0
+        .annotate(addr=Lower("email"))
+        .values("domain").annotate(n=Count("addr", distinct=True)).filter(n__gte=CHAIN_MIN)
+    )  # counts different addresses, so the same business found twice isn't mistaken for a chain
+    marked = mark_duplicates()
     for row in rows:
         domain = row["domain"]
         if not domain or domain.startswith(WEBMAIL):
@@ -562,7 +602,9 @@ def average_emails_per_search(last: int = 20) -> float | None:
 
 def emails_found_today() -> int:
     start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
-    return Lead.objects.filter(kind="business", email_found_at__gte=start).count()
+    from django.db.models.functions import Lower
+    return (Lead.objects.filter(kind="business", email_found_at__gte=start).exclude(email="")
+            .annotate(addr=Lower("email")).values("addr").distinct().count())  # same email twice counts once
 
 
 def research_queue(config: AgentConfig):
