@@ -66,7 +66,16 @@ LEAN_FLAGS = ["--system-prompt", LEAN_SYSTEM, "--tools", "", "--strict-mcp-confi
 _LEAN = {"on": True}
 
 
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def clean(text: str) -> str:
+    """Remove invisible control characters (some websites contain them); a null character crashes the call."""
+    return CONTROL_RE.sub(" ", text or "")
+
+
 def _claude_cli(prompt: str, model: str = "") -> str:
+    prompt = clean(prompt)
     binary = shutil.which(settings.CLAUDE_BIN) or settings.CLAUDE_BIN
     cmd = [binary, "-p", prompt, "--output-format", "json"]
     model = model or settings.LLM_MODEL

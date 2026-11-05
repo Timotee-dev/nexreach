@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from ..models import Lead, Message, Suppression, log
 from . import llm, writer
-from .mailer import accounts, check_config
+from .mailer import _log_once, accounts, check_config
 
 BOUNCE_SENDERS = ("mailer-daemon", "postmaster")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -182,7 +182,9 @@ def check_inbox(days: int = 7) -> int:
         except imaplib.IMAP4.error as exc:
             if address == settings.GMAIL_ADDRESS:
                 raise
-            log(f"Couldn't read the inbox {address}: {exc}", "error")
+            _log_once(f"Can't log in to {address}: Google rejected its App Password. Check GMAIL_APP_PASSWORD for it in .env "
+                      f"(it must be a 16-letter App Password, not the normal password), or remove those two lines.",
+                      level="error")
     return handled
 
 

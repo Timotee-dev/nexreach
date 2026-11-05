@@ -1610,3 +1610,15 @@ class LeanClaudeTests(TestCase):
             self.assertEqual(llm._claude_cli("hi"), "ok")
         self.assertNotIn("--system-prompt", run.call_args_list[1][0][0])
         llm._LEAN["on"] = True
+
+
+class NullCharacterTests(TestCase):
+    def test_control_characters_are_removed_before_calling_claude(self):
+        fake = mock.Mock(returncode=0, stdout='{"result": "ok"}', stderr="")
+        with mock.patch.object(llm.subprocess, "run", return_value=fake) as run:
+            llm._claude_cli("Website text: hello\x00 world\x07!")
+        sent = run.call_args[0][0][2]
+        self.assertNotIn("\x00", sent)
+        self.assertNotIn("\x07", sent)
+        self.assertIn("hello", sent)
+        self.assertIn("\n", llm.clean("a\nb"))  # normal line breaks are kept
