@@ -166,42 +166,49 @@ def send_approved(config: AgentConfig | None = None) -> int:
         return 0
     check_config()
 
-    inboxes = accounts()
-    room = {a: max(0, limit_for(a, config) - sent_today_by(a)) for a, _ in inboxes}
-    # Who sends what: a thread stays on its inbox; new cold emails go to the inbox with the most room left.
-    plan = {a: [] for a, _ in inboxes}
-    per_tick = {a: 0 for a, _ in inboxes}
-    limit_hit = False
-    for message in ready:
-        is_cold = message.kind != Message.Kind.REPLY
-        owner = thread_sender(message.lead)
-        if owner and owner not in plan:
-            owner = inboxes[0][0]  # that inbox was removed from .env; carry on from the main one
-        if not is_cold:
-            plan[owner or inboxes[0][0]].append(message)
-            continue
-        choices = [owner] if owner else sorted(plan, key=lambda a: -(room[a] - per_tick[a]))
-        target = next((a for a in choices if per_tick[a] < room[a] and per_tick[a] < config.sends_per_tick), None)
-        if target is None:
-            limit_hit = limit_hit or all(per_tick[a] >= room[a] for a in plan)
-            continue
-        plan[target].append(message)
-        per_tick[target] += 1
+    import contextlib
 
     sent = 0
-    for address, password in inboxes:
-        if not plan[address]:
-            continue
-        try:
-            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=60) as smtp:
+    limit_hit = False
+    with contextlib.ExitStack() as stack:
+        # Log in to every inbox FIRST and plan only with the ones that work, so emails are never handed
+        # to an inbox whose password is wrong.
+        connections = {}
+        for address, password in accounts():
+            try:
+                smtp = stack.enter_context(smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=60))
                 smtp.login(address, password)
-                for message in plan[address]:
-                    if send_message(message, config, smtp=smtp, address=address):
-                        sent += 1
-        except smtplib.SMTPAuthenticationError as exc:
-            if address == settings.GMAIL_ADDRESS:
-                raise
-            _log_once(f"Couldn't log in to {address} (check its App Password in .env): {exc}", level="error")
+                connections[address] = smtp
+            except (smtplib.SMTPException, OSError) as exc:
+                if address.lower() == settings.GMAIL_ADDRESS.lower():
+                    raise
+                _log_once(f"Can't send from {address}: Google rejected its App Password, so it is skipped. "
+                          f"Fix GMAIL_APP_PASSWORD for it in .env, or remove its lines. ({str(exc)[:80]})", level="error")
+        if not connections:
+            return 0
+        main = settings.GMAIL_ADDRESS if settings.GMAIL_ADDRESS in connections else next(iter(connections))
+        room = {a: max(0, limit_for(a, config) - sent_today_by(a)) for a in connections}
+        plan = {a: [] for a in connections}
+        per_tick = {a: 0 for a in connections}
+        for message in ready:
+            is_cold = message.kind != Message.Kind.REPLY
+            owner = thread_sender(message.lead)
+            if owner not in plan:
+                owner = ""  # that inbox is gone or not working right now
+            if not is_cold:
+                plan[owner or main].append(message)
+                continue
+            choices = [owner] if owner else sorted(plan, key=lambda a: -(room[a] - per_tick[a]))
+            target = next((a for a in choices if per_tick[a] < room[a] and per_tick[a] < config.sends_per_tick), None)
+            if target is None:
+                limit_hit = limit_hit or all(per_tick[a] >= room[a] for a in plan)
+                continue
+            plan[target].append(message)
+            per_tick[target] += 1
+        for address, messages in plan.items():
+            for message in messages:
+                if send_message(message, config, smtp=connections[address], address=address):
+                    sent += 1
     if limit_hit:
         _log_once(f"Today's limit of {capacity(config)} cold emails reached; the rest wait for tomorrow.", level="info")
     return sent

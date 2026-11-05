@@ -1622,3 +1622,27 @@ class NullCharacterTests(TestCase):
         self.assertNotIn("\x07", sent)
         self.assertIn("hello", sent)
         self.assertIn("\n", llm.clean("a\nb"))  # normal line breaks are kept
+
+
+@override_settings(**GMAIL, EXTRA_GMAIL_ACCOUNTS=[("bad@gmail.com", "wrong"), ("good@gmail.com", "ok")], WARMUP_START=10, WARMUP_STEP=3)
+class BrokenInboxTests(TestCase):
+    @mock.patch("agent.models.AgentConfig.within_send_window", return_value=True)
+    @mock.patch("agent.services.mailer.smtplib.SMTP_SSL")
+    def test_broken_inbox_does_not_hold_back_the_others(self, smtp_cls, _):
+        import smtplib
+        def make(*a, **k):
+            conn = mock.MagicMock()
+            conn.__enter__.return_value = conn
+            def login(user, pw):
+                if user == "bad@gmail.com":
+                    raise smtplib.SMTPAuthenticationError(535, b"bad")
+            conn.login.side_effect = login
+            return conn
+        smtp_cls.side_effect = make
+        config = AgentConfig.get(); config.daily_send_limit = 25; config.sends_per_tick = 50; config.save()
+        for i in range(30):
+            lead = Lead.objects.create(name=f"B{i}", email=f"b{i}@x.com", status="drafted")
+            Message.objects.create(lead=lead, direction="out", kind="initial", status="approved", subject="s", body="b")
+        self.assertEqual(mailer.send_approved(config), 30)
+        senders = set(Message.objects.filter(status="sent").values_list("sender", flat=True))
+        self.assertEqual(senders, {"me@gmail.com", "good@gmail.com"})
