@@ -1646,3 +1646,56 @@ class BrokenInboxTests(TestCase):
         self.assertEqual(mailer.send_approved(config), 30)
         senders = set(Message.objects.filter(status="sent").values_list("sender", flat=True))
         self.assertEqual(senders, {"me@gmail.com", "good@gmail.com"})
+
+
+@override_settings(**GMAIL, EXTRA_GMAIL_ACCOUNTS=[])
+class GmailLimitTests(TestCase):
+    def setUp(self):
+        mailer._blocked_until.clear()
+        self.addCleanup(mailer._blocked_until.clear)
+
+    def _approved(self, n):
+        out = []
+        for i in range(n):
+            lead = Lead.objects.create(name=f"L{i}", email=f"l{i}@x.com", status="drafted")
+            out.append(Message.objects.create(lead=lead, direction="out", kind="initial", status="approved", subject="s", body="b"))
+        return out
+
+    @mock.patch("agent.models.AgentConfig.within_send_window", return_value=True)
+    @mock.patch("agent.services.mailer.smtplib.SMTP_SSL")
+    def test_daily_limit_error_keeps_emails_approved_and_stops(self, smtp_cls, _):
+        import smtplib
+        conn = mock.MagicMock(); conn.__enter__.return_value = conn
+        conn.send_message.side_effect = smtplib.SMTPDataError(550, b"5.4.5 Daily user sending limit exceeded")
+        smtp_cls.return_value = conn
+        msgs = self._approved(5)
+        self.assertEqual(mailer.send_approved(AgentConfig.get()), 0)
+        self.assertEqual(conn.send_message.call_count, 1)  # stopped after the first refusal
+        self.assertEqual(Message.objects.filter(status="approved").count(), 5)
+        self.assertEqual(Message.objects.filter(status="failed").count(), 0)
+        # and it doesn't hammer Gmail on the next check-in
+        conn.send_message.reset_mock()
+        self.assertEqual(mailer.send_approved(AgentConfig.get()), 0)
+        self.assertEqual(conn.send_message.call_count, 0)
+
+    @mock.patch("agent.models.AgentConfig.within_send_window", return_value=True)
+    @mock.patch("agent.services.mailer.smtplib.SMTP_SSL")
+    def test_dropped_connection_is_not_a_failed_email(self, smtp_cls, _):
+        import smtplib
+        conn = mock.MagicMock(); conn.__enter__.return_value = conn
+        conn.send_message.side_effect = smtplib.SMTPServerDisconnected("please run connect() first")
+        smtp_cls.return_value = conn
+        self._approved(3)
+        mailer.send_approved(AgentConfig.get())
+        self.assertEqual(Message.objects.filter(status="failed").count(), 0)
+
+    @mock.patch("agent.models.AgentConfig.within_send_window", return_value=True)
+    @mock.patch("agent.services.mailer.smtplib.SMTP_SSL")
+    def test_bad_address_still_marks_that_email_failed(self, smtp_cls, _):
+        import smtplib
+        conn = mock.MagicMock(); conn.__enter__.return_value = conn
+        conn.send_message.side_effect = smtplib.SMTPRecipientsRefused({"l0@x.com": (550, b"5.1.1 user unknown")})
+        smtp_cls.return_value = conn
+        self._approved(1)
+        mailer.send_approved(AgentConfig.get())
+        self.assertEqual(Message.objects.filter(status="failed").count(), 1)

@@ -3,6 +3,8 @@ import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.utils import timezone
 
@@ -11,6 +13,25 @@ from ..models import AgentConfig, Lead, Message, Suppression, log
 
 class MailConfigError(Exception):
     pass
+
+
+class InboxUnavailable(Exception):
+    """Gmail refused for reasons about the INBOX (daily limit, dropped connection), not about this email."""
+
+
+_blocked_until: dict = {}
+BLOCK_HOURS = 4
+
+
+def is_inbox_problem(exc: Exception) -> bool:
+    text = str(exc).lower()
+    code = getattr(exc, "smtp_code", 0) or 0
+    return (
+        isinstance(exc, smtplib.SMTPServerDisconnected)
+        or code in (421, 450, 451, 452, 454)
+        or any(w in text for w in ("5.4.5", "sending limit", "daily user", "try again later", "connect() first",
+                                   "unexpectedly closed", "rate limit"))
+    )
 
 
 def check_config():
@@ -109,6 +130,8 @@ def send_message(message: Message, config: AgentConfig | None = None, smtp=None,
     try:
         smtp.send_message(em)
     except smtplib.SMTPException as exc:
+        if is_inbox_problem(exc):
+            raise InboxUnavailable(str(exc)) from exc  # the email stays approved and is tried again later
         message.status, message.error = Message.Status.FAILED, str(exc)[:1000]
         message.save(update_fields=["status", "error"])
         log(f"Sending to {lead.name} failed: {exc}", "error", lead=lead)
@@ -175,6 +198,9 @@ def send_approved(config: AgentConfig | None = None) -> int:
         # to an inbox whose password is wrong.
         connections = {}
         for address, password in accounts():
+            until = _blocked_until.get(address.lower())
+            if until and until > timezone.now():
+                continue  # resting after Gmail's daily limit
             try:
                 smtp = stack.enter_context(smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=60))
                 smtp.login(address, password)
@@ -207,8 +233,18 @@ def send_approved(config: AgentConfig | None = None) -> int:
             per_tick[target] += 1
         for address, messages in plan.items():
             for message in messages:
-                if send_message(message, config, smtp=connections[address], address=address):
-                    sent += 1
+                try:
+                    if send_message(message, config, smtp=connections[address], address=address):
+                        sent += 1
+                except InboxUnavailable as exc:
+                    resume = timezone.now() + timedelta(hours=BLOCK_HOURS)
+                    _blocked_until[address.lower()] = resume
+                    _log_once(
+                        f"Gmail stopped {address} from sending ({str(exc)[:90]}). Emails stay approved and "
+                        f"sending from it resumes around {timezone.localtime(resume):%H:%M}. "
+                        f"This usually means its daily limit was reached: let it rest and lower your daily limit.",
+                        level="error")
+                    break  # stop using this inbox for now; nothing is marked failed
     if limit_hit:
         _log_once(f"Today's limit of {capacity(config)} cold emails reached; the rest wait for tomorrow.", level="info")
     return sent
