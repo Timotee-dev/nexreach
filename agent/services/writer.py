@@ -78,6 +78,33 @@ JSON fields: "body".
 """
 
 
+CLOSA_NOTE = """
+THIS EMAIL IS ABOUT CLOSA, NOT A WEBSITE. Do not sell websites or mention the speed or design of their site.
+Closa is brand new: say it is launching soon and that we're inviting a small group of businesses to early access.
+Do not claim customers, results, numbers or testimonials. Open with something true about THEIR business: how
+people reach a {category} (enquiries by phone, WhatsApp, DMs and email) and how easily those get missed after hours.
+If a specific observation is given, use it. Ask whether they'd like early access{link}.
+"""
+
+
+def pitches_closa(lead, config) -> bool:
+    """Same business always gets the same pitch (so follow-ups match): by lead number, closa_share out of 100."""
+    from ..models import is_agency
+    return bool(config.closa_enabled and config.closa_share and not is_agency(lead.category)
+                and lead.pk % 100 < config.closa_share)
+
+
+def offer_for(lead, config) -> str:
+    return config.closa_pitch if pitches_closa(lead, config) else config.offer
+
+
+def closa_note(lead, config) -> str:
+    if not pitches_closa(lead, config):
+        return ""
+    link = f" or tell them they can join the early-access list at {config.closa_url.strip()}" if config.closa_url.strip() else ""
+    return CLOSA_NOTE.format(category=lead.category or "business", link=link)
+
+
 def _language(lead) -> str:
     return (lead.market.language if lead and lead.market_id else "") or "English"
 
@@ -119,14 +146,14 @@ def draft_initial(lead: Lead, config: AgentConfig | None = None) -> Message:
             sender=config.sender_name,
             company=config.company_name,
             name=lead.name,
-            offer=config.offer,
+            offer=offer_for(lead, config),
             category=lead.category or "business",
             city=lead.city or "their city",
             country=lead.market.name if lead.market_id else "unknown country",
             summary=lead.research_summary or "n/a",
             hook=lead.hook or "none",
             signals="; ".join(lead.site_signals or []) or "none",
-            rules=(AGENCY_NOTE if is_agency(lead.category) else "") + _rules(config, lead=lead),
+            rules=(AGENCY_NOTE if is_agency(lead.category) else "") + closa_note(lead, config) + _rules(config, lead=lead),
         )
     )
     msg = Message.objects.create(
@@ -156,10 +183,10 @@ def draft_followup(lead: Lead, config: AgentConfig | None = None) -> Message:
             category=lead.category or "business",
             city=lead.city or "",
             country=lead.market.name if lead.market_id else "",
-            offer=config.offer,
+            offer=offer_for(lead, config),
             history=_history(lead),
             final_note="This is the last follow-up: politely say you won't email again." if final else "",
-            rules=("This is an agency: keep pitching white-label development for their clients, not a website for them.\n" if is_agency(lead.category) else "") + _rules(config, words=80, lead=lead),
+            rules=("This is an agency: keep pitching white-label development for their clients, not a website for them.\n" if is_agency(lead.category) else "") + closa_note(lead, config) + _rules(config, words=80, lead=lead),
         )
     )
     msg = Message.objects.create(
@@ -181,7 +208,7 @@ def draft_reply(lead: Lead, classification: str, config: AgentConfig | None = No
         REPLY_PROMPT.format(
             sender=config.sender_name,
             company=config.company_name,
-            offer=config.offer,
+            offer=offer_for(lead, config),
             name=lead.name,
             category=lead.category or "business",
             city=lead.city or "",
@@ -252,7 +279,7 @@ def draft_whatsapp(lead: Lead, config: AgentConfig | None = None) -> str:
             category=lead.category or "business",
             city=lead.city or "their city",
             country=lead.market.name if lead.market_id else "their country",
-            offer=config.offer,
+            offer=offer_for(lead, config),
             summary=lead.research_summary or "n/a",
             hook=lead.hook or "none",
             signals="; ".join(lead.site_signals or []) or "none",

@@ -23,6 +23,12 @@ DEFAULT_OFFER = (
     "Every project gets a fixed price before work starts, and we can send a free mockup or a short plan first.\n"
     "Portfolio: https://nexlab0.netlify.app"
 )
+DEFAULT_CLOSA = (
+    "Closa is an AI sales assistant for businesses. It answers customer enquiries on WhatsApp, email, website chat and "
+    "Instagram/TikTok DMs around the clock, qualifies the people who write in, and books appointments or hands "
+    "hot leads to your team, so no enquiry goes cold. Closa is launching soon and we are inviting a small group "
+    "of businesses to join early access first."
+)
 DEFAULT_ICP = (
     "Established, profitable small and mid-sized businesses (roughly 5-200 staff) in high-value sectors - "
     "healthcare, legal, accounting, financial services, real estate, architecture, construction and home "
@@ -111,6 +117,10 @@ class AgentConfig(models.Model):
     )
 
     # What you sell and to whom
+    closa_enabled = models.BooleanField(default=True, help_text="Pitch Closa (early access) to some businesses instead of websites.")
+    closa_share = models.PositiveIntegerField(default=30, help_text="Out of every 100 businesses, how many get the Closa pitch (the rest get your website/software offer). Agencies always get the white-label pitch.")
+    closa_url = models.CharField(max_length=300, blank=True, help_text="Your Closa waitlist page, e.g. https://closa.xyz. Emails ask them to join it.")
+    closa_pitch = models.TextField(default=DEFAULT_CLOSA, help_text="What Closa is, in your words. Claude only uses what you write here - never invented results or customers.")
     offer = models.TextField(default=DEFAULT_OFFER, help_text="Your services, starting prices (USD) and proof. Claude picks the most relevant one for each business.")
     ideal_customer = models.TextField(default=DEFAULT_ICP, help_text="Who is worth contacting.")
     writing_rules = models.TextField(

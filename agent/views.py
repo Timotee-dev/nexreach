@@ -311,6 +311,7 @@ def settings_view(request):
     groups = [
         ("You & your offer", ["agent_enabled", "sender_name", "company_name", "company_website", "offer",
                               "ideal_customer", "writing_rules", "signature", "opt_out_line"]),
+        ("Closa (second product)", ["closa_enabled", "closa_share", "closa_url", "closa_pitch"]),
         ("Sectors to search", ["target_categories", "foursquare_monthly_limit", "daily_email_target",
                                "searches_when_behind", "min_emails_per_search", "search_size", "scan_per_tick", "only_contactable", "skip_poor_sectors", "max_sector_share",
                                "research_dm_leads"]),
@@ -413,8 +414,8 @@ def emails_found(request):
     """Every business email NexReach has found, and which step each one is at."""
     from .services import loop
 
+    config = AgentConfig.get()
     if request.method == "POST" and request.POST.get("action") == "process_next":
-        config = AgentConfig.get()
         try:
             research.mark_chains(config)
             researched = research.research_many(list(research.research_queue(config).filter(kind="business")[:16]), config)
@@ -447,6 +448,7 @@ def emails_found(request):
     for lead in page:
         lead.stage = STATUS_STAGE.get(lead.status, "")
         lead.agency = is_agency(lead.category)
+        lead.closa = writer.pitches_closa(lead, config)
     return render(request, "agent/emails_found.html", {
         "page": page, "day": day, "stage": stage, "stage_counts": stage_counts,
         "total": sum(n for _, _, n in stage_counts), **_nav_counts(),

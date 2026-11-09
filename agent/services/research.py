@@ -200,6 +200,11 @@ def site_signals(resp, seconds: float, html: str) -> list[str]:
         signals.append("Homepage has no page title (hurts Google search).")
     if not soup.find("meta", attrs={"name": re.compile("^description$", re.I)}):
         signals.append("No meta description for Google search results.")
+    chat_markers = ("tawk.to", "intercom", "crisp.chat", "drift.com", "livechat", "tidio", "zendesk", "hubspot",
+                    "freshchat", "olark", "wa.me/", "api.whatsapp.com", "whatsapp.com/send", "chatra", "smartsupp",
+                    "manychat", "messenger.com", "m.me/", "chatbot")
+    if not any(m in html.lower() for m in chat_markers):
+        signals.append("No live chat or WhatsApp chat button found on the homepage, so enquiries only arrive by form, phone or email.")
     builders = {"wix.com": "Wix", "blogspot.": "Blogspot", "wordpress.com": "WordPress.com", "business.site": "Google Business Sites"}
     for marker, label in builders.items():
         if marker in resp.url or marker in html[:20000]:

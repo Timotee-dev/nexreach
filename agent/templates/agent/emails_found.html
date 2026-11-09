@@ -21,7 +21,7 @@
   <tbody>
   {% for l in page %}
   <tr>
-    <td><a href="{% url 'lead_detail' l.pk %}"><b>{{ l.name }}</b></a>{% if l.agency %} <span class="pill qualified">Agency partner</span>{% endif %}<div class="muted small">{{ l.category }}{% if l.city %} · {{ l.city }}{% endif %}</div></td>
+    <td><a href="{% url 'lead_detail' l.pk %}"><b>{{ l.name }}</b></a>{% if l.agency %} <span class="pill qualified">Agency partner</span>{% elif l.closa %} <span class="pill contacted">Closa</span>{% endif %}<div class="muted small">{{ l.category }}{% if l.city %} · {{ l.city }}{% endif %}</div></td>
     <td class="small"><a href="mailto:{{ l.email }}">{{ l.email }}</a></td>
     <td class="hide-sm muted small">{% if l.email_found_at %}{{ l.email_found_at|timesince }} ago{% endif %}</td>
     <td class="small">

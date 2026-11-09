@@ -1699,3 +1699,46 @@ class GmailLimitTests(TestCase):
         self._approved(1)
         mailer.send_approved(AgentConfig.get())
         self.assertEqual(Message.objects.filter(status="failed").count(), 1)
+
+
+class ClosaTests(TestCase):
+    def _draft(self, lead):
+        seen = {}
+        def fake(prompt, model=""):
+            seen["p"] = prompt
+            return {"subject": "s", "body": "b"}
+        with mock.patch.object(writer.llm, "ask_json", side_effect=fake):
+            writer.draft_initial(lead)
+        return seen["p"]
+
+    def test_share_splits_businesses_and_is_stable(self):
+        config = AgentConfig.get(); config.closa_share = 30; config.save()
+        leads = [Lead.objects.create(name=f"B{i}", email=f"b{i}@x.com", category="dentist") for i in range(100)]
+        flags = [writer.pitches_closa(l, config) for l in leads]
+        self.assertTrue(20 <= sum(flags) <= 40)
+        self.assertEqual(flags, [writer.pitches_closa(l, config) for l in leads])  # follow-ups match the first email
+
+    def test_closa_pitch_uses_closa_text_and_link(self):
+        config = AgentConfig.get(); config.closa_share = 100; config.closa_url = "https://closa.example"; config.save()
+        lead = Lead.objects.create(name="Dent", email="d@d.se", category="dentist", status="qualified")
+        prompt = self._draft(lead)
+        self.assertIn("Closa is an AI sales assistant", prompt)
+        self.assertIn("https://closa.example", prompt)
+        self.assertIn("NOT A WEBSITE", prompt)
+        self.assertNotIn("Nexlab is a software studio", prompt)
+
+    def test_agencies_never_get_closa_and_switch_works(self):
+        config = AgentConfig.get(); config.closa_share = 100; config.save()
+        agency = Lead.objects.create(name="Pixel", email="p@p.co", category="marketing agency", status="qualified")
+        self.assertFalse(writer.pitches_closa(agency, config))
+        config.closa_enabled = False; config.save()
+        lead = Lead.objects.create(name="Dent", email="d@d.se", category="dentist", status="qualified")
+        self.assertFalse(writer.pitches_closa(lead, config))
+        self.assertIn("Nexlab is a software studio", self._draft(lead))
+
+    def test_chat_signal(self):
+        resp = mock.Mock(url="https://x.com")
+        no_chat = research.site_signals(resp, 1, "<html><head><title>t</title></head><body>hi</body></html>")
+        self.assertTrue(any("live chat" in s for s in no_chat))
+        has = research.site_signals(resp, 1, "<html><head><title>t</title></head><body><a href='https://wa.me/123'>x</a></body></html>")
+        self.assertFalse(any("live chat" in s for s in has))
